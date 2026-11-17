@@ -12,6 +12,7 @@ ACCUMULATION_STEPS="${ACCUMULATION_STEPS:-8}"
 IMG_SIZE="${IMG_SIZE:-128}"
 NUM_EPOCHS="${NUM_EPOCHS:-50}"
 LEARNING_RATE="${LEARNING_RATE:-8e-5}"
+RESUME="${RESUME:-0}"
 
 if [[ "${CONDA_DEFAULT_ENV:-}" != "fsdp-med3d" ]]; then
   echo "Activate the project environment first: conda activate fsdp-med3d" >&2
@@ -34,12 +35,47 @@ if [[ "$IMAGE_COUNT" -eq 0 || "$IMAGE_COUNT" -ne "$LABEL_COUNT" ]]; then
 fi
 
 RUN_ID="${TASK_NAME:-fsdp_nasalseg_ts_pseudolabel_$(date -u +%Y%m%dT%H%M%SZ)}"
+RESUME_ARGS=()
+case "$RESUME" in
+  latest)
+    RUN_ID="$(python - "$SAM_MED3D_DIR" <<'PY'
+import sys
+from pathlib import Path
+
+checkpoints = list((Path(sys.argv[1]) / "work_dir").glob("fsdp_nasalseg_ts_pseudolabel_*/sam_model_latest.pth"))
+if not checkpoints:
+    raise SystemExit("No completed-epoch checkpoint found; use RESUME=0 for a new run.")
+print(max(checkpoints, key=lambda path: path.stat().st_mtime).parent.name)
+PY
+)"
+    RESUME_ARGS=(--resume)
+    ;;
+  1)
+    if [[ -z "${TASK_NAME:-}" ]]; then
+      echo "RESUME=1 requires TASK_NAME to identify the run." >&2
+      exit 2
+    fi
+    RESUME_ARGS=(--resume)
+    ;;
+  0) ;;
+  *) echo "RESUME must be 0, 1, or latest." >&2; exit 2 ;;
+esac
 if [[ ! "$RUN_ID" =~ ^[A-Za-z0-9._-]+$ ]]; then
   echo "TASK_NAME may contain only letters, numbers, dot, underscore, and hyphen." >&2
   exit 2
 fi
 LOG_DIR="$PROJECT_DIR/logs/training"
 LOG_FILE="$LOG_DIR/$RUN_ID.log"
+if [[ "$RESUME" != "0" ]]; then
+  if [[ ! -s "$SAM_MED3D_DIR/work_dir/$RUN_ID/sam_model_latest.pth" ]]; then
+    echo "Cannot resume: completed-epoch checkpoint missing for $RUN_ID" >&2
+    exit 1
+  fi
+  LOG_FILE="$LOG_DIR/$RUN_ID.resume_$(date -u +%Y%m%dT%H%M%SZ)_$$.log"
+elif [[ -e "$LOG_FILE" ]]; then
+  echo "Log already exists for $RUN_ID; choose a new TASK_NAME or use RESUME=1." >&2
+  exit 1
+fi
 PID_FILE="$LOG_DIR/$RUN_ID.pid"
 mkdir -p "$LOG_DIR"
 
@@ -69,6 +105,7 @@ nohup python -u train.py \
   --img_size "$IMG_SIZE" \
   --num_epochs "$NUM_EPOCHS" \
   --lr "$LEARNING_RATE" \
+  "${RESUME_ARGS[@]}" \
   > "$LOG_FILE" 2>&1 < /dev/null &
 TRAIN_PID=$!
 echo "$TRAIN_PID" > "$PID_FILE"
@@ -84,5 +121,6 @@ fi
 
 echo "Training started (PID $TRAIN_PID)"
 echo "Cases: $IMAGE_COUNT | GPUs: ${GPU_ID_ARRAY[*]} | Epochs: $NUM_EPOCHS"
+echo "Run: $RUN_ID | Resume: $RESUME"
 echo "Log: $LOG_FILE"
 echo "Monitor: bash '$PROJECT_DIR/scripts/monitor_training.sh' tail"

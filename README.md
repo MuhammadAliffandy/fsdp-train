@@ -117,6 +117,8 @@ If an earlier run stopped with `linalg.vector_norm: Expected a floating point or
 
 Setup also handles an empty error region in `get_next_click3D_torch_2`. The upstream sampler raises `ValueError: high <= 0` when prediction and target have no differing voxels. The patched sampler keeps sampling errors when available; otherwise it selects a positive target voxel, or a negative voxel when the target is empty. Prompt labels always follow the target at the selected coordinate. For this error, pull the latest code, re-run setup, and launch again using the commands below.
 
+The training Dice metric scores an empty prediction paired with an empty target as `1.0` and returns a tensor consistently. This prevents the upstream float `.item()` crash and NaN epoch averages. Empty pairs therefore contribute to this training metric; it is a crop-level metric and does not establish foreground segmentation quality on full scans.
+
 ```bash
 cd ~/raid/Clara/fsdp-train
 git pull origin main
@@ -124,6 +126,8 @@ conda activate fsdp-med3d
 bash scripts/setup_sam_med3d.sh
 bash scripts/launch_training_nohup.sh
 ```
+
+To continue after a crash when a completed-epoch checkpoint exists, run `RESUME=latest bash scripts/launch_training_nohup.sh`. It selects the most recently modified `sam_model_latest.pth` among the default public run directories, restores model/optimizer/scheduler state through the upstream `--resume` option, and writes a separate resume log. It restarts at the next epoch after the saved epoch; partial-epoch work is repeated. For a specific run use `TASK_NAME=<run_name> RESUME=1 bash scripts/launch_training_nohup.sh`. The upstream checkpoint does not save RNG or AMP scaler state, so this is epoch-level recovery rather than an exact continuation of the interrupted batch.
 
 Monitor the process and follow its log from another terminal:
 

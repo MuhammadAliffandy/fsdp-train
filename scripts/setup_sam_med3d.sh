@@ -62,6 +62,18 @@ if source.count(old_loss) == 1:
     source = source.replace(old_loss, new_loss, 1)
 elif source.count(new_loss) != 1:
     raise SystemExit("Could not safely configure float targets for DiceCELoss in train.py")
+metric_start = source.index("    def get_dice_score(")
+metric_end = source.find("\n    def ", metric_start + 1)
+if metric_end == -1:
+    raise SystemExit("Could not locate the end of get_dice_score in train.py")
+metric = source[metric_start:metric_end]
+old_empty = "return np.NaN"
+new_empty = "return volume_sum.new_tensor(1.0, dtype=torch.float32)"
+if metric.count(old_empty) == 1:
+    metric = metric.replace(old_empty, new_empty, 1)
+elif metric.count(new_empty) != 1:
+    raise SystemExit("Could not safely configure empty-pair Dice in train.py")
+source = source[:metric_start] + metric + source[metric_end:]
 trainer.write_text(source, encoding="utf-8")
 
 click_file = repo / "utils/click_method.py"
@@ -94,6 +106,7 @@ print(f"Configured SAM-Med3D data path: {data_dir}")
 print("Configured foreground threshold: -1 (include all non-empty masks)")
 print("Configured DiceCELoss targets: float32 (integer labels retained for prompts)")
 print("Configured prompt fallback: target foreground or negative point when the error region is empty")
+print("Configured Dice: both-empty masks score 1.0, returned as a tensor")
 PY
 
 echo "SAM-Med3D is ready at $SAM_MED3D_DIR"

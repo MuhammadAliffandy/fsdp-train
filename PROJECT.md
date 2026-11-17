@@ -2,6 +2,8 @@
 
 ## Status
 
+The patched run completed epoch 0 and reached batch 83/130 of epoch 1, then failed in training Dice: two empty masks returned a Python NaN float and the batch mean called `.item()`. Setup now gives empty pairs a tensor Dice of 1.0. The launcher can resume the latest completed-epoch checkpoint with `RESUME=latest`, preserving prior logs. This metric convention counts empty-pair agreement and must be considered when interpreting crop-level training Dice.
+
 The next DGX attempt passed the loss calculation and reached batch 88/130 of epoch 0, then stopped in the upstream prompt sampler with `ValueError: high <= 0` (no error voxels to sample). Setup now patches a target-based fallback for this condition. CPU checks reproduced the upstream crash and verified empty targets, identical foreground, full masks, false negatives, false positives, mixed batches, and repeated setup. The corrected run still needs to execute on DGX.
 
 The first public training launch loaded the turbo checkpoint and found 130 batches, but stopped at epoch 0 before finishing the first batch: MONAI's Dice loss received an integer target. Setup now casts the target to float32 specifically at the loss call; the nohup launcher uses unbuffered Python output for log monitoring. The corrected launch still needs to run on DGX.
