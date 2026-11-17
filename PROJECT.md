@@ -44,6 +44,14 @@ References: [official repository](https://github.com/uni-medical/SAM-Med3D), [pa
 
 No claim is made here that this model is already suitable for FSDP or that its released checkpoint can directly produce semantic anatomical labels without an agreed prompting/training setup.
 
+## NasalSeg archive audit (user-reported, 2026-11-17)
+
+- Extracted archive contains 130 NRRD images and 130 NRRD labels. The first sample pairs (`P001_img.nrrd` and `P001_seg.nrrd`) have matching size and spacing.
+- Example image size is `153 × 205 × 52` voxels with spacing approximately `0.586 × 0.586 × 1.5 mm`.
+- Label values are 0 through 5. They correspond to background, right/left maxillary sinus, right/left nasal cavity, and nasopharynx. No label is frontal sinus or FSDP.
+- The downloaded image volume appears substantially smaller than the median dimensions reported in the dataset paper. We have not confirmed whether its field of view contains the frontal sinus.
+- User cannot perform visual review. Proceed with TotalSegmentator pseudo-label generation as a public pilot, while automatically reporting empty masks, inference failures, and geometry mismatches. This does not replace expert review or establish anatomical correctness.
+
 ## Open-data research: current findings
 
 Searches for public CT datasets labeled for the frontal sinus drainage pathway or frontal recess did not identify an openly downloadable, annotated dataset for the pathway itself. A useful additional finding is that an open-source model can produce a frontal sinus mask, and a sinus CT dataset may contain relevant surrounding anatomy; neither finding establishes a public ground-truth FSDP training set.

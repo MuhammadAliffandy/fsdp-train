@@ -73,6 +73,25 @@ tar -xzf NasalSeg.tar.gz -C extracted
 
 The Zenodo v2 record publishes a 224 MB ZIP, not a TAR.GZ. The download uses Zenodo's file-content API and a descriptive User-Agent. The commands stop on an HTTP/download failure, validate the ZIP checksum, repack its contents as TAR.GZ with Python, remove the source ZIP, and extract the TAR.GZ. Review the extracted layout before writing dataset conversion code; do not assume image or mask extensions from the archive name.
 
+## Generate frontal-sinus pseudo-labels on DGX
+
+NasalSeg v2 contains 130 paired NRRD CT/mask files. Its masks label maxillary sinuses, nasal cavities, and nasopharynx, not the frontal sinus. For the public experiment, run TotalSegmentator's `craniofacial_structures` task on the CT images and use its `sinus_frontal` output as pseudo-labels.
+
+```bash
+cd ~/raid/Clara/fsdp-train
+git pull
+conda activate fsdp-med3d
+python -m pip install TotalSegmentator
+python scripts/generate_pseudolabels.py \
+  --input-dir data/raw/public/nasalseg/extracted/NasalSeg/images \
+  --nifti-dir data/interim/public/nifti \
+  --output-dir data/pseudo_labels/public/totalsegmentator \
+  --manifest data/manifests/nasalseg_totalsegmentator_pseudo_labels.csv \
+  --device gpu
+```
+
+The script converts each NRRD image to NIfTI, runs inference per scan, resumes cases with an existing mask, and writes per-case logs plus a manifest. The manifest records inference failures, empty masks, and image/mask geometry mismatches. These checks do not establish anatomical correctness; all predictions remain pseudo-labels, not expert ground truth.
+
 ## DGX workflow
 
 1. Clone the repository.
