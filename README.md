@@ -42,12 +42,34 @@ curl -L --fail --retry 5 --retry-delay 2 -C - \
   -o NasalSeg.zip \
   'https://zenodo.org/records/13893419/files/NasalSeg.zip?download=1'
 echo 'ba83df47974d907798542101fa43ac7d  NasalSeg.zip' | md5sum -c -
-unzip -l NasalSeg.zip | head -40
+python - <<'PY'
+from pathlib import Path
+import tarfile
+import zipfile
+
+source = Path("NasalSeg.zip")
+target = Path("NasalSeg.tar.gz")
+with zipfile.ZipFile(source) as archive:
+    bad_member = archive.testzip()
+    if bad_member:
+        raise SystemExit(f"Corrupt member in source archive: {bad_member}")
+    with tarfile.open(target, "w:gz") as output:
+        for item in archive.infolist():
+            if item.is_dir():
+                continue
+            member = tarfile.TarInfo(f"NasalSeg/{item.filename}")
+            member.size = item.file_size
+            with archive.open(item) as content:
+                output.addfile(member, content)
+print(f"Created {target}")
+PY
+rm NasalSeg.zip
+tar -tzf NasalSeg.tar.gz | head -40
 mkdir -p extracted
-unzip -q NasalSeg.zip -d extracted
+tar -xzf NasalSeg.tar.gz -C extracted
 ```
 
-The Zenodo v2 record lists the archive as 224 MB. Review the extracted layout before writing dataset conversion code; do not assume image or mask extensions from the archive name.
+The Zenodo v2 record publishes a 224 MB ZIP, not a TAR.GZ. The commands validate the downloaded ZIP, repack its contents as TAR.GZ with Python, remove the source ZIP, and extract the TAR.GZ. Review the extracted layout before writing dataset conversion code; do not assume image or mask extensions from the archive name.
 
 ## DGX workflow
 
