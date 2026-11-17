@@ -63,9 +63,37 @@ if source.count(old_loss) == 1:
 elif source.count(new_loss) != 1:
     raise SystemExit("Could not safely configure float targets for DiceCELoss in train.py")
 trainer.write_text(source, encoding="utf-8")
+
+click_file = repo / "utils/click_method.py"
+click_source = click_file.read_text(encoding="utf-8")
+start = click_source.index("def get_next_click3D_torch_2(")
+end = click_source.find("\ndef ", start + 1)
+if end == -1:
+    end = len(click_source)
+click_function = click_source[start:end]
+old_points = """        points = torch.argwhere(to_point_mask[i])
+        point = points[np.random.randint(len(points))]"""
+new_points = """        points = torch.argwhere(to_point_mask[i])
+        if len(points) == 0:
+            points = torch.argwhere(true_masks[i])
+        if len(points) > 0:
+            point = points[np.random.randint(len(points))]
+        else:
+            point = torch.tensor(
+                [0] + [np.random.randint(size) for size in true_masks.shape[2:]],
+                dtype=torch.long, device=true_masks.device,
+            )"""
+old_label = "if fn_masks[i, 0, point[1], point[2], point[3]]:"
+new_label = "if true_masks[i, 0, point[1], point[2], point[3]]:"
+if click_function.count(old_points) == 1 and click_function.count(old_label) == 1:
+    click_function = click_function.replace(old_points, new_points, 1).replace(old_label, new_label, 1)
+elif click_function.count(new_points) != 1 or click_function.count(new_label) != 1:
+    raise SystemExit("Could not safely configure empty-region handling in click_method.py")
+click_file.write_text(click_source[:start] + click_function + click_source[end:], encoding="utf-8")
 print(f"Configured SAM-Med3D data path: {data_dir}")
 print("Configured foreground threshold: -1 (include all non-empty masks)")
 print("Configured DiceCELoss targets: float32 (integer labels retained for prompts)")
+print("Configured prompt fallback: target foreground or negative point when the error region is empty")
 PY
 
 echo "SAM-Med3D is ready at $SAM_MED3D_DIR"

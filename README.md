@@ -115,6 +115,8 @@ The setup also converts binary targets to float32 at the `DiceCELoss` call, sinc
 
 If an earlier run stopped with `linalg.vector_norm: Expected a floating point or complex tensor as input. Got Long`, pull the latest project code and run setup again before launching a new run. No dataset conversion or checkpoint download is needed when the existing files are complete. The failed run's log is retained under its original timestamp.
 
+Setup also handles an empty error region in `get_next_click3D_torch_2`. The upstream sampler raises `ValueError: high <= 0` when prediction and target have no differing voxels. The patched sampler keeps sampling errors when available; otherwise it selects a positive target voxel, or a negative voxel when the target is empty. Prompt labels always follow the target at the selected coordinate. For this error, pull the latest code, re-run setup, and launch again using the commands below.
+
 ```bash
 cd ~/raid/Clara/fsdp-train
 git pull origin main

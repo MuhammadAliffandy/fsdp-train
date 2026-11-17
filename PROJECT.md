@@ -2,6 +2,8 @@
 
 ## Status
 
+The next DGX attempt passed the loss calculation and reached batch 88/130 of epoch 0, then stopped in the upstream prompt sampler with `ValueError: high <= 0` (no error voxels to sample). Setup now patches a target-based fallback for this condition. CPU checks reproduced the upstream crash and verified empty targets, identical foreground, full masks, false negatives, false positives, mixed batches, and repeated setup. The corrected run still needs to execute on DGX.
+
 The first public training launch loaded the turbo checkpoint and found 130 batches, but stopped at epoch 0 before finishing the first batch: MONAI's Dice loss received an integer target. Setup now casts the target to float32 specifically at the loss call; the nohup launcher uses unbuffered Python output for log monitoring. The corrected launch still needs to run on DGX.
 
 Working direction agreed: public frontal-sinus pseudo-label experiment, followed by supervised fine-tuning with private NIfTI labels. The public pseudo-label QC passed for all 130 NasalSeg cases. The SAM-Med3D data packaging script and initial launch procedure are now documented; the first training run has not started.
