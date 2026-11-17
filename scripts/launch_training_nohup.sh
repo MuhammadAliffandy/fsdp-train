@@ -58,7 +58,7 @@ if ((${#GPU_ID_ARRAY[@]} != 1)); then
   exit 2
 fi
 cd "$SAM_MED3D_DIR"
-nohup python train.py \
+nohup python -u train.py \
   --task_name "$RUN_ID" \
   --model_type vit_b_ori \
   --checkpoint "$CHECKPOINT" \

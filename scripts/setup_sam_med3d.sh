@@ -50,13 +50,22 @@ source = trainer.read_text(encoding="utf-8")
 old = "threshold=1000)"
 new = "threshold=-1)"
 if source.count(old) == 1:
-    trainer.write_text(source.replace(old, new, 1), encoding="utf-8")
+    source = source.replace(old, new, 1)
 elif source.count(new) == 1:
     pass
 else:
     raise SystemExit("Could not safely set the foreground threshold in train.py")
+
+old_loss = "self.seg_loss(prev_masks, gt3D)"
+new_loss = "self.seg_loss(prev_masks, gt3D.float())"
+if source.count(old_loss) == 1:
+    source = source.replace(old_loss, new_loss, 1)
+elif source.count(new_loss) != 1:
+    raise SystemExit("Could not safely configure float targets for DiceCELoss in train.py")
+trainer.write_text(source, encoding="utf-8")
 print(f"Configured SAM-Med3D data path: {data_dir}")
 print("Configured foreground threshold: -1 (include all non-empty masks)")
+print("Configured DiceCELoss targets: float32 (integer labels retained for prompts)")
 PY
 
 echo "SAM-Med3D is ready at $SAM_MED3D_DIR"

@@ -111,6 +111,10 @@ It writes matching `imagesTr/<case>.nii.gz` and `labelsTr/<case>.nii.gz`; masks 
 
 The setup script clones the official implementation if needed, downloads its recommended `sam_med3d_turbo.pth` checkpoint, configures the prepared data path, and lowers the loader foreground threshold to `-1`. This is necessary because the public masks include many cases with fewer than 1000 foreground voxels. The launcher always runs training under `nohup`, saves a timestamped log and PID under ignored `logs/training/`, and refuses to start a second copy with the same run name.
 
+The setup also converts binary targets to float32 at the `DiceCELoss` call, since recent MONAI Dice computations require floating targets. The integer labels remain available for prompt generation. Re-running setup applies these edits without duplicating them. Training uses unbuffered Python output (`python -u`) so log messages appear promptly when following the log.
+
+If an earlier run stopped with `linalg.vector_norm: Expected a floating point or complex tensor as input. Got Long`, pull the latest project code and run setup again before launching a new run. No dataset conversion or checkpoint download is needed when the existing files are complete. The failed run's log is retained under its original timestamp.
+
 ```bash
 cd ~/raid/Clara/fsdp-train
 git pull origin main
