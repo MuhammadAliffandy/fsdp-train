@@ -28,6 +28,24 @@ python scripts/audit_nifti.py --labels /path/to/private_frontal_sinus_mask.nii.g
 
 The first pass checks image coverage, shape, voxel spacing, orientation, and mask label values. This is needed before generating TotalSegmentator pseudo-labels or converting data to the SAM-Med3D training layout. If an archive contains NRRD or another format, convert it while preserving physical geometry before using this NIfTI audit script.
 
+## Download the public CT source on DGX
+
+NasalSeg v2 is the current public CT source candidate. Its annotations do not include frontal sinus; the scans are used as public images, and frontal-sinus pseudo-labels will be generated separately with TotalSegmentator after checking scan coverage.
+
+```bash
+mkdir -p data/raw/public/nasalseg
+cd data/raw/public/nasalseg
+curl -L --fail --retry 5 --retry-delay 2 -C - \
+  -o NasalSeg.zip \
+  'https://zenodo.org/records/13893419/files/NasalSeg.zip?download=1'
+echo 'ba83df47974d907798542101fa43ac7d  NasalSeg.zip' | md5sum -c -
+unzip -l NasalSeg.zip | head -40
+mkdir -p extracted
+unzip -q NasalSeg.zip -d extracted
+```
+
+The Zenodo v2 record lists the archive as 224 MB. Review the extracted layout before writing dataset conversion code; do not assume image or mask extensions from the archive name.
+
 ## DGX workflow
 
 1. Clone or sync this repository onto DGX.
