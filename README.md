@@ -159,7 +159,9 @@ The script matches NIfTI basenames, allowing an image-only `_0000` suffix and th
 
 ## Prepare and fine-tune private bilateral FSDP
 
-The reviewed ColorTable samples define `1=RFSDP` and `9=LFSDP`. The first private target is their binary union; other structures are background. Preparation checks every patient's ColorTable before extracting these two labels. It requires all audit rows to be `ok`, matching scalar 3D geometry, valid integer labels, and a nonempty FSDP target per patient. No label IDs are inferred from their numeric order.
+The reviewed ColorTable samples define `1=RFSDP` and `9=LFSDP`. The first private target is their binary union; other structures are background. Preparation checks every included patient's ColorTable before extracting these two labels. Included patients must have an `ok` audit, matching scalar 3D geometry, valid integer labels, and a nonempty FSDP target. No label IDs are inferred from their numeric order.
+
+The actual audit found 84 `ok` pairs and 2 geometry mismatches with substantially different image/mask grids. Use `--exclude-geometry-mismatch` for the first private run: it omits only those audited failures and records the excluded IDs/reasons in the local manifest. It does not modify the original scans/masks, resample mismatched masks, or accept other failure types. This produces **54 train / 10 validation / 20 test** from 84 eligible patients. The 20 test patients are selected only from eligible IDs in the old test pool. Revisit the two excluded cases separately to establish whether they belong to the same scan/coordinate frame before alignment.
 
 ```bash
 cd ~/raid/Clara/fsdp-train
@@ -168,7 +170,8 @@ conda activate fsdp-med3d
 python -u scripts/prepare_private_fsdp.py \
   --root "$HOME/raid/normal case_86" \
   --audit outputs/private/audit.json \
-  --output-dir data/processed/private/fsdp
+  --output-dir data/processed/private/fsdp \
+  --exclude-geometry-mismatch
 ```
 
 With 86 valid patient IDs, the frozen split is **56 train / 10 validation / 20 test**, seed 2026. The 20 test patients are a deterministic subset of the 26 IDs in the original `test_set`; remaining patients, including the other six old test IDs, are eligible for train/validation. The original JSON is preserved. This assumes each numeric filename ID identifies one patient and one CT; provide a patient grouping map before preparation if there are multiple IDs/scans per patient. The script stops on ambiguous IDs or mismatched inputs, writes through a temporary directory, and refuses to overwrite a frozen dataset. The local `manifest.json` records patient membership, source paths, target definitions, original split checksum, and per-side voxel counts. It is ignored by Git.

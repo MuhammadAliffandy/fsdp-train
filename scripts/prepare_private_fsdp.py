@@ -16,14 +16,22 @@ import SimpleITK as sitk
 from audit_private_dataset import nifti_id
 
 
-def prepare(root, audit_path, output, test_count=20, val_count=10, seed=2026):
+def prepare(root, audit_path, output, test_count=20, val_count=10, seed=2026, exclude_geometry_mismatch=False):
     root, output = root.expanduser().resolve(), output.resolve()
     if output.exists():
         raise ValueError("Output already exists; use the frozen manifest or choose a new output directory")
     audit = json.loads(audit_path.read_text(encoding="utf-8"))
-    rows = audit["cases"]
-    if not rows or any(row["status"] != "ok" for row in rows):
-        raise ValueError("All private audit rows must be ok before preparation")
+    all_rows = audit["cases"]
+    if not all_rows or len({row['case_id'] for row in all_rows}) != len(all_rows):
+        raise ValueError("Audit must contain distinct case IDs")
+    allowed = {"ok", "geometry_mismatch"} if exclude_geometry_mismatch else {"ok"}
+    if any(row["status"] not in allowed for row in all_rows):
+        from collections import Counter
+        counts = dict(Counter(row["status"] for row in all_rows))
+        raise ValueError(f"Audit contains unaccepted statuses: {counts}; only explicit geometry-mismatch exclusion is supported")
+    excluded = [{"patient_id": row["case_id"], "reason": row["status"]}
+                for row in all_rows if row["status"] != "ok"]
+    rows = [row for row in all_rows if row["status"] == "ok"]
     ids = sorted(row["case_id"] for row in rows)
     if len(ids) != len(set(ids)) or any(not key.isdigit() for key in ids):
         raise ValueError("Expected unique numeric patient IDs, one image per patient; otherwise supply a patient mapping first")
@@ -36,8 +44,10 @@ def prepare(root, audit_path, output, test_count=20, val_count=10, seed=2026):
     if not isinstance(previous, list) or not all(isinstance(item, str) for item in previous):
         raise ValueError("Expected test_set to be a list of case IDs or filenames")
     candidates = [nifti_id(Path(item)).removesuffix("-label").removesuffix("_0000") for item in previous]
-    if len(set(candidates)) != len(candidates) or not set(candidates) <= set(ids):
+    if len(set(candidates)) != len(candidates) or not set(candidates) <= {row["case_id"] for row in all_rows}:
         raise ValueError("Old test set contains duplicate or unknown patient IDs")
+    original_test_count = len(candidates)
+    candidates = sorted(set(candidates) & set(ids))
     if len(candidates) < test_count:
         raise ValueError("Old test pool contains fewer than 20 patients")
     rng = random.Random(seed)
@@ -102,6 +112,8 @@ def prepare(root, audit_path, output, test_count=20, val_count=10, seed=2026):
                             "bbox_xyz": (points.max(axis=0) - points.min(axis=0) + 1)[::-1].tolist()})
         counts = {split: sum(value == split for value in split_by_id.values()) for split in ("train", "val", "test")}
         manifest = {"seed": seed, "patient_unit": "numeric filename ID, one CT per patient",
+                    "excluded_patients": excluded,
+                    "old_test_candidates": original_test_count, "eligible_old_test_candidates": len(candidates),
                     "target": {"1": "RFSDP", "9": "LFSDP"}, "binary_target": "union of labels 1 and 9",
                     "preprocessing": "native spacing and orientation; no resampling or intensity changes",
                     "counts": counts, "previous_test_file": str(split_file),
@@ -112,6 +124,7 @@ def prepare(root, audit_path, output, test_count=20, val_count=10, seed=2026):
         (staging / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         staging.rename(output)
     print("Private FSDP data prepared:", counts)
+    print("Excluded geometry-mismatch patients:", len(excluded))
     print("Target: binary RFSDP (1) + LFSDP (9)")
     print("Frozen manifest:", output / "manifest.json")
     print("Patients with a target bounding box exceeding 128 voxels on any axis:",
@@ -127,9 +140,12 @@ def main():
     parser.add_argument("--output-dir", type=Path, default=Path("data/processed/private/fsdp"))
     parser.add_argument("--val-patients", type=int, default=10)
     parser.add_argument("--seed", type=int, default=2026)
+    parser.add_argument("--exclude-geometry-mismatch", action="store_true",
+                        help="Explicitly omit audited geometry mismatches and record them in the frozen manifest")
     args = parser.parse_args()
     try:
-        prepare(args.root, args.audit, args.output_dir, val_count=args.val_patients, seed=args.seed)
+        prepare(args.root, args.audit, args.output_dir, val_count=args.val_patients, seed=args.seed,
+                exclude_geometry_mismatch=args.exclude_geometry_mismatch)
     except (ValueError, KeyError, OSError) as error:
         parser.exit(1, f"Private preparation stopped: {error}\n")
 
