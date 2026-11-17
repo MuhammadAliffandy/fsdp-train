@@ -2,16 +2,19 @@
 
 Research workspace for the public frontal-sinus pseudo-label experiment and later supervised fine-tuning with the available private NIfTI labels. See [PROJECT.md](PROJECT.md) for the research plan and open decisions.
 
-## Create the Conda environment
+## DGX setup order
 
-The environment follows the official SAM-Med3D Python 3.10 and PyTorch 2.6.0 setup, with NIfTI and dataset-audit dependencies added.
+Clone the project, create the Conda environment, install Python requirements, verify GPU visibility, then download the dataset.
 
 ```bash
+git clone https://github.com/MuhammadAliffandy/fsdp-train.git
+cd fsdp-train
 conda env create -f environment.yml
 conda activate fsdp-med3d
+pip install -r requirements.txt
 ```
 
-On DGX, confirm that PyTorch sees the assigned GPU before launching an experiment:
+The environment follows the official SAM-Med3D Python 3.10 and PyTorch 2.6.0 setup, with NIfTI and dataset-audit dependencies added. Confirm that PyTorch sees the assigned GPU before downloading data or launching an experiment:
 
 ```bash
 python -c "import torch; print('torch:', torch.__version__); print('cuda:', torch.cuda.is_available()); print('gpus:', torch.cuda.device_count())"
@@ -48,10 +51,11 @@ The Zenodo v2 record lists the archive as 224 MB. Review the extracted layout be
 
 ## DGX workflow
 
-1. Clone or sync this repository onto DGX.
-2. Create the Conda environment from `environment.yml`.
-3. Download/extract public data and model checkpoints into ignored `data/` and `checkpoints/` paths.
-4. Run the NIfTI audit and inspect representative scans/masks.
-5. After the data layout and label mapping are agreed, implement pseudo-label generation and SAM-Med3D training commands.
+1. Clone the repository.
+2. Create and activate the Conda environment, then install `requirements.txt`.
+3. Confirm DGX GPU visibility from PyTorch.
+4. Download/extract public data into the ignored `data/` path.
+5. Run the NIfTI audit and inspect representative scans/masks.
+6. After the data layout and label mapping are agreed, implement pseudo-label generation and SAM-Med3D training commands.
 
 Do not place private scans, private subject IDs, checkpoints, or generated masks in Git.
