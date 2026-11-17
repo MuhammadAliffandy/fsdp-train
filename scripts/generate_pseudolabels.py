@@ -70,7 +70,6 @@ def main() -> None:
                     "-i", str(nifti_path),
                     "-o", str(case_output),
                     "-ta", "craniofacial_structures",
-                    "--roi_subset", "sinus_frontal",
                     "--device", args.device,
                 ]
                 with log_path.open("w", encoding="utf-8") as log_file:
