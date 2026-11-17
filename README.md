@@ -92,6 +92,67 @@ python scripts/generate_pseudolabels.py \
 
 The script converts each NRRD image to NIfTI, runs inference per scan, resumes cases with an existing mask, and writes per-case logs plus a manifest. The manifest records inference failures, empty masks, and image/mask geometry mismatches. These checks do not establish anatomical correctness; all predictions remain pseudo-labels, not expert ground truth.
 
+## Prepare the SAM-Med3D training data
+
+After the pseudo-label manifest reports 130 `ok` cases, package the CT volumes and binary frontal-sinus masks in the directory structure expected by the official SAM-Med3D loader:
+
+```bash
+cd ~/raid/Clara/fsdp-train
+python scripts/prepare_sam_med3d.py \
+  --image-dir data/interim/public/nifti \
+  --pseudo-dir data/pseudo_labels/public/totalsegmentator \
+  --manifest data/manifests/nasalseg_totalsegmentator_pseudo_labels.csv \
+  --output-dir data/medical_preprocessed/fsdp/ct_nifti
+```
+
+It writes matching `imagesTr/<case>.nii.gz` and `labelsTr/<case>.nii.gz`; masks are binarized to uint8 values 0/1 while preserving the original geometry. Image files are hard-linked when the filesystem permits, otherwise copied. The script stops on missing files, non-`ok` manifest entries, empty masks, geometry mismatch, or existing output files. Use `--overwrite` only to intentionally rebuild this derived dataset.
+
+## Launch the first SAM-Med3D run
+
+Clone the official implementation on DGX and obtain its recommended `sam_med3d_turbo.pth` checkpoint. Keep the checkpoint outside this project repository. In the SAM-Med3D checkout, point `img_datas` at the prepared directory and lower the loader foreground threshold to `-1`; its default threshold of 1000 excludes small masks and can recurse indefinitely if all masks are below threshold.
+
+```bash
+cd ~/raid/Clara
+git clone https://github.com/uni-medical/SAM-Med3D.git
+cd SAM-Med3D
+conda activate fsdp-med3d
+mkdir -p ckpt
+curl -L --fail --show-error --retry 5 \
+  -o ckpt/sam_med3d_turbo.pth \
+  https://huggingface.co/blueyo0/SAM-Med3D/resolve/main/sam_med3d_turbo.pth
+python - <<'PY'
+from pathlib import Path
+
+paths = Path("utils/data_paths.py")
+paths.write_text('''import os.path as osp\n\nPROJ_DIR = osp.dirname(osp.dirname(__file__))\nimg_datas = [osp.expanduser("~/raid/Clara/fsdp-train/data/medical_preprocessed/fsdp/ct_nifti")]\n''')
+
+trainer = Path("train.py")
+text = trainer.read_text()
+old = "threshold=1000)"
+if text.count(old) != 1:
+    raise SystemExit("Expected one threshold=1000 in train.py; inspect upstream file before editing")
+trainer.write_text(text.replace(old, "threshold=-1)", 1))
+PY
+```
+
+Then launch a conservative single-GPU run; adjust `--gpu_ids` to a GPU visible to this job and lower batch size if memory is insufficient:
+
+```bash
+python train.py \
+  --task_name fsdp_nasalseg_ts_pseudolabel_baseline \
+  --model_type vit_b_ori \
+  --checkpoint ckpt/sam_med3d_turbo.pth \
+  --gpu_ids 0 \
+  --num_workers 4 \
+  --batch_size 1 \
+  --accumulation_steps 8 \
+  --img_size 128 \
+  --num_epochs 50 \
+  --lr 8e-5
+```
+
+This official training script trains on `labelsTr` and reports training-set metrics; it does not provide a held-out validation split in its standard `train.py` path. Treat those metrics as agreement with TotalSegmentator pseudo-labels, not anatomical accuracy. The first run is a pipeline/adaptation baseline. Do not use it to claim FSDP clinical performance; evaluation against the private expert-labeled holdout is a later, separate stage.
+
 ## DGX workflow
 
 1. Clone the repository.
@@ -99,6 +160,6 @@ The script converts each NRRD image to NIfTI, runs inference per scan, resumes c
 3. Confirm DGX GPU visibility from PyTorch.
 4. Download/extract public data into the ignored `data/` path.
 5. Run the NIfTI audit and inspect representative scans/masks.
-6. After the data layout and label mapping are agreed, implement pseudo-label generation and SAM-Med3D training commands.
+6. Package accepted pseudo-labels in SAM-Med3D format and launch the public pseudo-label baseline.
 
 Do not place private scans, private subject IDs, checkpoints, or generated masks in Git.

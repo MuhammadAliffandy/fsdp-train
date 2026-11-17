@@ -2,7 +2,7 @@
 
 ## Status
 
-Working direction agreed: public frontal-sinus pseudo-label experiment, followed by supervised fine-tuning with private NIfTI labels. Dataset audit, label semantics, split, and training settings remain pending.
+Working direction agreed: public frontal-sinus pseudo-label experiment, followed by supervised fine-tuning with private NIfTI labels. The public pseudo-label QC passed for all 130 NasalSeg cases. The SAM-Med3D data packaging script and initial launch procedure are now documented; the first training run has not started.
 
 ## Project goal
 
@@ -13,8 +13,8 @@ The eventual product may be a website or mobile application, depending on the wo
 ## Current proposed sequence
 
 1. Inspect public CT and private NIfTI geometry, image coverage, and label values.
-2. Generate and review TotalSegmentator frontal-sinus pseudo-labels on suitable public CT scans.
-3. Convert accepted pseudo-labeled cases to the SAM-Med3D training layout and establish a public pseudo-label agreement baseline.
+2. Generate and review TotalSegmentator frontal-sinus pseudo-labels on suitable public CT scans. User-reported QC: 130 cases, 130 masks, all statuses `ok`, no geometry mismatches, empty masks, or failures. This is automated QC and does not verify anatomical correctness.
+3. Convert accepted pseudo-labeled cases to SAM-Med3D's `imagesTr`/`labelsTr` layout and run a public pseudo-label adaptation baseline. The standard upstream trainer logs training metrics and does not create a held-out validation set.
 4. Confirm the private label definition, then define a patient-level fine-tuning and held-out evaluation split.
 5. Fine-tune and evaluate on private data; preserve code, configs, logs, and checkpoints.
 
