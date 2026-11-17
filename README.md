@@ -157,6 +157,45 @@ python -u scripts/audit_private_dataset.py \
 
 The script matches NIfTI basenames, allowing an image-only `_0000` suffix and the confirmed label suffix `-label` (for example `subject.nii.gz` pairs with `subject-label.nii.gz`). It checks all pairs for 3D geometry, label values, and empty masks. Ambiguous pairs are reported rather than guessed. The console summary includes a redacted structural description of `held_out_test_set_30percent.json` and counts how many `test_set` entries match paired case IDs; it does not apply a split. Detailed case IDs and paths remain in the ignored `outputs/private/audit.json` on DGX. Use the audit results to define the target IDs and interpret the existing split before creating private training/validation folders. Private supervised fine-tuning should use a new run/checkpoint initialization, not `RESUME=latest` of the public experiment.
 
+## Prepare and fine-tune private bilateral FSDP
+
+The reviewed ColorTable samples define `1=RFSDP` and `9=LFSDP`. The first private target is their binary union; other structures are background. Preparation checks every patient's ColorTable before extracting these two labels. It requires all audit rows to be `ok`, matching scalar 3D geometry, valid integer labels, and a nonempty FSDP target per patient. No label IDs are inferred from their numeric order.
+
+```bash
+cd ~/raid/Clara/fsdp-train
+git pull origin main
+conda activate fsdp-med3d
+python -u scripts/prepare_private_fsdp.py \
+  --root "$HOME/raid/normal case_86" \
+  --audit outputs/private/audit.json \
+  --output-dir data/processed/private/fsdp
+```
+
+With 86 valid patient IDs, the frozen split is **56 train / 10 validation / 20 test**, seed 2026. The 20 test patients are a deterministic subset of the 26 IDs in the original `test_set`; remaining patients, including the other six old test IDs, are eligible for train/validation. The original JSON is preserved. This assumes each numeric filename ID identifies one patient and one CT; provide a patient grouping map before preparation if there are multiple IDs/scans per patient. The script stops on ambiguous IDs or mismatched inputs, writes through a temporary directory, and refuses to overwrite a frozen dataset. The local `manifest.json` records patient membership, source paths, target definitions, original split checksum, and per-side voxel counts. It is ignored by Git.
+
+Images retain native geometry and intensities, with hard links when possible or copies otherwise; masks are separate binary uint8 NIfTI files. Each split has its own `ct_private/imagesTr` and `ct_private/labelsTr` directories. Only `train/ct_private` is passed to the trainer; directory separation prevents its loader from including validation/test. The prep summary flags target bounding boxes wider than the 128-voxel training crop for further inspection.
+
+Once preparation succeeds, apply the trainer fixes and start a new private run under nohup:
+
+```bash
+bash scripts/setup_sam_med3d.sh && bash scripts/launch_private_training_nohup.sh
+bash scripts/monitor_training.sh tail
+```
+
+The private launcher picks the most recently modified public `sam_model_latest.pth` under the default public run prefix, verifies it records at least 50 completed epochs, and uses its model weights to initialize a fresh private run. Set `PUBLIC_CHECKPOINT=/absolute/path/to/sam_model_latest.pth` to select a public run explicitly. Private runs start with `fsdp_private_binary_`, reset optimizer/scheduler and epoch count, and default to learning rate `2e-5`, batch size 1, accumulation 8, 50 epochs, and GPU 0. The common launcher verifies the runtime data path and paired filenames before starting the background process. Logs/PIDs and checkpoint directories are separate from public runs.
+
+The upstream trainer currently reports **training** metrics only; the 10 validation patients are reserved for a separate evaluation stage and are not used for automatic checkpoint selection. Its `dice_best`/`loss_best` filenames reflect training metrics. Do not evaluate the 20 test patients during model development. This model remains prompt-based, using label-derived prompts and target-centered crops during training; these metrics do not measure automatic full-volume segmentation.
+
+To recover an interrupted private run, use the exact private run name printed at launch:
+
+```bash
+TASK_NAME=fsdp_private_binary_<timestamp> RESUME=1 \
+  TRAIN_DATA_DIR="$PWD/data/processed/private/fsdp/train/ct_private" \
+  LEARNING_RATE=2e-5 bash scripts/launch_training_nohup.sh
+```
+
+Do not use `RESUME=latest` for private recovery: that shortcut deliberately searches public run names. Resume restores the saved optimizer learning rate; a new private experiment instead uses the private launcher.
+
 ## DGX workflow
 
 1. Clone the repository.

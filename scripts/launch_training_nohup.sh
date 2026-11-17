@@ -3,8 +3,8 @@ set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SAM_MED3D_DIR="${SAM_MED3D_DIR:-$HOME/raid/Clara/SAM-Med3D}"
-DATA_DIR="$PROJECT_DIR/data/medical_preprocessed/fsdp/ct_nifti"
-CHECKPOINT="$SAM_MED3D_DIR/ckpt/sam_med3d_turbo.pth"
+DATA_DIR="${TRAIN_DATA_DIR:-$PROJECT_DIR/data/medical_preprocessed/fsdp/ct_nifti}"
+CHECKPOINT="${INITIAL_CHECKPOINT:-$SAM_MED3D_DIR/ckpt/sam_med3d_turbo.pth}"
 GPU_IDS="${GPU_IDS:-0}"
 BATCH_SIZE="${BATCH_SIZE:-1}"
 NUM_WORKERS="${NUM_WORKERS:-4}"
@@ -35,7 +35,6 @@ if [[ "$IMAGE_COUNT" -eq 0 || "$IMAGE_COUNT" -ne "$LABEL_COUNT" ]]; then
 fi
 
 RUN_ID="${TASK_NAME:-fsdp_nasalseg_ts_pseudolabel_$(date -u +%Y%m%dT%H%M%SZ)}"
-RESUME_ARGS=()
 case "$RESUME" in
   latest)
     RUN_ID="$(python - "$SAM_MED3D_DIR" <<'PY'
@@ -48,14 +47,12 @@ if not checkpoints:
 print(max(checkpoints, key=lambda path: path.stat().st_mtime).parent.name)
 PY
 )"
-    RESUME_ARGS=(--resume)
     ;;
   1)
     if [[ -z "${TASK_NAME:-}" ]]; then
       echo "RESUME=1 requires TASK_NAME to identify the run." >&2
       exit 2
     fi
-    RESUME_ARGS=(--resume)
     ;;
   0) ;;
   *) echo "RESUME must be 0, 1, or latest." >&2; exit 2 ;;
@@ -93,8 +90,25 @@ if ((${#GPU_ID_ARRAY[@]} != 1)); then
   echo "This launcher is configured for one GPU; set GPU_IDS to a single ID (default: 0)." >&2
   exit 2
 fi
+export FSDP_DATA_DIR="$DATA_DIR"
 cd "$SAM_MED3D_DIR"
-nohup python -u train.py \
+python - "$DATA_DIR" <<'PY'
+import importlib.util
+from pathlib import Path
+import sys
+
+expected = Path(sys.argv[1]).resolve()
+spec = importlib.util.spec_from_file_location("fsdp_config", "utils/data_paths.py")
+config = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(config)
+if [Path(path).resolve() for path in config.img_datas] != [expected]:
+    raise SystemExit("Trainer data path differs from requested split; re-run setup_sam_med3d.sh")
+images = {p.name for p in (expected / 'imagesTr').glob('*.nii.gz')}
+labels = {p.name for p in (expected / 'labelsTr').glob('*.nii.gz')}
+if not images or images != labels:
+    raise SystemExit("Training CT and label filenames do not match")
+PY
+TRAIN_COMMAND=(python -u train.py \
   --task_name "$RUN_ID" \
   --model_type vit_b_ori \
   --checkpoint "$CHECKPOINT" \
@@ -104,8 +118,11 @@ nohup python -u train.py \
   --accumulation_steps "$ACCUMULATION_STEPS" \
   --img_size "$IMG_SIZE" \
   --num_epochs "$NUM_EPOCHS" \
-  --lr "$LEARNING_RATE" \
-  "${RESUME_ARGS[@]}" \
+  --lr "$LEARNING_RATE")
+if [[ "$RESUME" != "0" ]]; then
+  TRAIN_COMMAND+=(--resume)
+fi
+nohup "${TRAIN_COMMAND[@]}" \
   > "$LOG_FILE" 2>&1 < /dev/null &
 TRAIN_PID=$!
 echo "$TRAIN_PID" > "$PID_FILE"
@@ -122,5 +139,7 @@ fi
 echo "Training started (PID $TRAIN_PID)"
 echo "Cases: $IMAGE_COUNT | GPUs: ${GPU_ID_ARRAY[*]} | Epochs: $NUM_EPOCHS"
 echo "Run: $RUN_ID | Resume: $RESUME"
+echo "Training data: $DATA_DIR"
+echo "Initial checkpoint (used for a new run): $CHECKPOINT"
 echo "Log: $LOG_FILE"
 echo "Monitor: bash '$PROJECT_DIR/scripts/monitor_training.sh' tail"

@@ -39,9 +39,9 @@ repo = Path(os.environ["SAM_MED3D_DIR"])
 data_dir = Path(os.environ["PROJECT_DATA_DIR"]).resolve()
 paths_file = repo / "utils/data_paths.py"
 paths_file.write_text(
-    "import os.path as osp\n\n"
+    "import os\nimport os.path as osp\n\n"
     "PROJ_DIR = osp.dirname(osp.dirname(__file__))\n"
-    f"img_datas = [{str(data_dir)!r}]\n",
+    f"img_datas = [os.environ.get('FSDP_DATA_DIR', {str(data_dir)!r})]\n",
     encoding="utf-8",
 )
 
