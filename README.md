@@ -107,49 +107,26 @@ python scripts/prepare_sam_med3d.py \
 
 It writes matching `imagesTr/<case>.nii.gz` and `labelsTr/<case>.nii.gz`; masks are binarized to uint8 values 0/1 while preserving the original geometry. Image files are hard-linked when the filesystem permits, otherwise copied. The script stops on missing files, non-`ok` manifest entries, empty masks, geometry mismatch, or existing output files. Use `--overwrite` only to intentionally rebuild this derived dataset.
 
-## Launch the first SAM-Med3D run
+## Launch and monitor SAM-Med3D training
 
-Clone the official implementation on DGX and obtain its recommended `sam_med3d_turbo.pth` checkpoint. Keep the checkpoint outside this project repository. In the SAM-Med3D checkout, point `img_datas` at the prepared directory and lower the loader foreground threshold to `-1`; its default threshold of 1000 excludes small masks and can recurse indefinitely if all masks are below threshold.
+The setup script clones the official implementation if needed, downloads its recommended `sam_med3d_turbo.pth` checkpoint, configures the prepared data path, and lowers the loader foreground threshold to `-1`. This is necessary because the public masks include many cases with fewer than 1000 foreground voxels. The launcher always runs training under `nohup`, saves a timestamped log and PID under ignored `logs/training/`, and refuses to start a second copy with the same run name.
 
 ```bash
-cd ~/raid/Clara
-git clone https://github.com/uni-medical/SAM-Med3D.git
-cd SAM-Med3D
+cd ~/raid/Clara/fsdp-train
+git pull origin main
 conda activate fsdp-med3d
-mkdir -p ckpt
-curl -L --fail --show-error --retry 5 \
-  -o ckpt/sam_med3d_turbo.pth \
-  https://huggingface.co/blueyo0/SAM-Med3D/resolve/main/sam_med3d_turbo.pth
-python - <<'PY'
-from pathlib import Path
-
-paths = Path("utils/data_paths.py")
-paths.write_text('''import os.path as osp\n\nPROJ_DIR = osp.dirname(osp.dirname(__file__))\nimg_datas = [osp.expanduser("~/raid/Clara/fsdp-train/data/medical_preprocessed/fsdp/ct_nifti")]\n''')
-
-trainer = Path("train.py")
-text = trainer.read_text()
-old = "threshold=1000)"
-if text.count(old) != 1:
-    raise SystemExit("Expected one threshold=1000 in train.py; inspect upstream file before editing")
-trainer.write_text(text.replace(old, "threshold=-1)", 1))
-PY
+bash scripts/setup_sam_med3d.sh
+bash scripts/launch_training_nohup.sh
 ```
 
-Then launch a conservative single-GPU run; adjust `--gpu_ids` to a GPU visible to this job and lower batch size if memory is insufficient:
+Monitor the process and follow its log from another terminal:
 
 ```bash
-python train.py \
-  --task_name fsdp_nasalseg_ts_pseudolabel_baseline \
-  --model_type vit_b_ori \
-  --checkpoint ckpt/sam_med3d_turbo.pth \
-  --gpu_ids 0 \
-  --num_workers 4 \
-  --batch_size 1 \
-  --accumulation_steps 8 \
-  --img_size 128 \
-  --num_epochs 50 \
-  --lr 8e-5
+bash scripts/monitor_training.sh status
+bash scripts/monitor_training.sh tail
 ```
+
+Defaults are one GPU (`GPU_IDS=0`), batch size 1, accumulation 8, 128-cube input, and 50 epochs. You can set `TASK_NAME` to choose a run name or override values such as `GPU_IDS`, `BATCH_SIZE`, `NUM_WORKERS`, `ACCUMULATION_STEPS`, `IMG_SIZE`, `NUM_EPOCHS`, and `LEARNING_RATE` when launching. Each run's log is `logs/training/<task_name>.log`; `latest.log` follows the newest launch. This launcher is configured for single-GPU training.
 
 This official training script trains on `labelsTr` and reports training-set metrics; it does not provide a held-out validation split in its standard `train.py` path. Treat those metrics as agreement with TotalSegmentator pseudo-labels, not anatomical accuracy. The first run is a pipeline/adaptation baseline. Do not use it to claim FSDP clinical performance; evaluation against the private expert-labeled holdout is a later, separate stage.
 

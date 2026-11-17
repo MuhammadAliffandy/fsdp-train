@@ -10,6 +10,8 @@ data/manifests/*.tsv
 checkpoints/
 outputs/
 runs/
+logs/
+*.pid
 *.ckpt
 *.pth
 *.pt
