@@ -36,11 +36,13 @@ The first pass checks image coverage, shape, voxel spacing, orientation, and mas
 NasalSeg v2 is the current public CT source candidate. Its annotations do not include frontal sinus; the scans are used as public images, and frontal-sinus pseudo-labels will be generated separately with TotalSegmentator after checking scan coverage.
 
 ```bash
+set -euo pipefail
 mkdir -p data/raw/public/nasalseg
 cd data/raw/public/nasalseg
-curl -L --fail --retry 5 --retry-delay 2 -C - \
+curl --location --fail --show-error --retry 5 --retry-delay 2 -C - \
+  --user-agent 'fsdp-train/0.1 (research dataset download)' \
   -o NasalSeg.zip \
-  'https://zenodo.org/records/13893419/files/NasalSeg.zip?download=1'
+  'https://zenodo.org/api/records/13893419/files/NasalSeg.zip/content'
 echo 'ba83df47974d907798542101fa43ac7d  NasalSeg.zip' | md5sum -c -
 python - <<'PY'
 from pathlib import Path
@@ -69,7 +71,7 @@ mkdir -p extracted
 tar -xzf NasalSeg.tar.gz -C extracted
 ```
 
-The Zenodo v2 record publishes a 224 MB ZIP, not a TAR.GZ. The commands validate the downloaded ZIP, repack its contents as TAR.GZ with Python, remove the source ZIP, and extract the TAR.GZ. Review the extracted layout before writing dataset conversion code; do not assume image or mask extensions from the archive name.
+The Zenodo v2 record publishes a 224 MB ZIP, not a TAR.GZ. The download uses Zenodo's file-content API and a descriptive User-Agent. The commands stop on an HTTP/download failure, validate the ZIP checksum, repack its contents as TAR.GZ with Python, remove the source ZIP, and extract the TAR.GZ. Review the extracted layout before writing dataset conversion code; do not assume image or mask extensions from the archive name.
 
 ## DGX workflow
 
