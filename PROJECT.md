@@ -2,13 +2,19 @@
 
 ## Status
 
+Public fine-tuning completed through epoch 49/49 with 130/130 batches in the final epoch (user-reported screenshot): training loss 2.0503935735959273, training Dice 0.785527542921213. These are training crop metrics against TotalSegmentator pseudo-labels, with empty-pair Dice defined as 1.0. All 130 cases were used for training; no held-out public evaluation was performed.
+
+The next authorized stage is supervised private FSDP fine-tuning. The dataset resides on DGX outside this repo at `~/raid/normal case_86`. The user confirmed `labelsTr` contains the final FSDP annotations. Other label versions exist in `labels_exp1`, `labels_exp2`, and `labels_exp3`. An existing `held_out_test_set_30percent.json` must be inspected and its membership preserved before training. `scripts/audit_private_dataset.py` reads the external dataset, saves a detailed ignored local report, and prints a summary without case identifiers. Exact label IDs, pairing, geometry, and split schema still need the DGX audit output. No private training has started.
+
+### Earlier public training debugging
+
 The patched run completed epoch 0 and reached batch 83/130 of epoch 1, then failed in training Dice: two empty masks returned a Python NaN float and the batch mean called `.item()`. Setup now gives empty pairs a tensor Dice of 1.0. The launcher can resume the latest completed-epoch checkpoint with `RESUME=latest`, preserving prior logs. This metric convention counts empty-pair agreement and must be considered when interpreting crop-level training Dice.
 
 The next DGX attempt passed the loss calculation and reached batch 88/130 of epoch 0, then stopped in the upstream prompt sampler with `ValueError: high <= 0` (no error voxels to sample). Setup now patches a target-based fallback for this condition. CPU checks reproduced the upstream crash and verified empty targets, identical foreground, full masks, false negatives, false positives, mixed batches, and repeated setup. The corrected run still needs to execute on DGX.
 
 The first public training launch loaded the turbo checkpoint and found 130 batches, but stopped at epoch 0 before finishing the first batch: MONAI's Dice loss received an integer target. Setup now casts the target to float32 specifically at the loss call; the nohup launcher uses unbuffered Python output for log monitoring. The corrected launch still needs to run on DGX.
 
-Working direction agreed: public frontal-sinus pseudo-label experiment, followed by supervised fine-tuning with private NIfTI labels. The public pseudo-label QC passed for all 130 NasalSeg cases. The SAM-Med3D data packaging script and initial launch procedure are now documented; the first training run has not started.
+The public pseudo-label QC passed for all 130 NasalSeg cases before the training attempts described above.
 
 ## Project goal
 

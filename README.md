@@ -140,6 +140,23 @@ Defaults are one GPU (`GPU_IDS=0`), batch size 1, accumulation 8, 128-cube input
 
 This official training script trains on `labelsTr` and reports training-set metrics; it does not provide a held-out validation split in its standard `train.py` path. Treat those metrics as agreement with TotalSegmentator pseudo-labels, not anatomical accuracy. The first run is a pipeline/adaptation baseline. Do not use it to claim FSDP clinical performance; evaluation against the private expert-labeled holdout is a later, separate stage.
 
+## Audit the external private FSDP dataset
+
+The final private annotations are in `labelsTr` (confirmed by the user). Keep the external source dataset intact and inspect the existing held-out split before preparing fine-tuning data:
+
+```bash
+cd ~/raid/Clara/fsdp-train
+git pull origin main
+conda activate fsdp-med3d
+mkdir -p outputs/private
+python -u scripts/audit_private_dataset.py \
+  --root "$HOME/raid/normal case_86" \
+  --output outputs/private/audit.json \
+  | tee outputs/private/audit_summary.log
+```
+
+The script matches identical NIfTI basenames, allowing an image-only `_0000` suffix. It checks all pairs for 3D geometry, label values, and empty masks. Ambiguous pairs are reported rather than guessed. The console summary includes a redacted structural description of `held_out_test_set_30percent.json`; it does not apply or infer a split. Detailed case IDs and paths remain in the ignored `outputs/private/audit.json` on DGX. Use the audit results to define the target IDs and interpret the existing split before creating private training/validation folders. Private supervised fine-tuning should use a new run/checkpoint initialization, not `RESUME=latest` of the public experiment.
+
 ## DGX workflow
 
 1. Clone the repository.
