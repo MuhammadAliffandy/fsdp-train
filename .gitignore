@@ -1,0 +1,34 @@
+# Private/public imaging data and derived masks
+data/raw/**
+data/interim/**
+data/processed/**
+data/pseudo_labels/**
+data/manifests/*.csv
+data/manifests/*.tsv
+
+# Model artifacts and experiment outputs
+checkpoints/
+outputs/
+runs/
+*.ckpt
+*.pth
+*.pt
+*.nii
+*.nii.gz
+*.nrrd
+*.dcm
+
+# Python and local environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+.conda/
+
+# Local environment overrides
+.env
+.DS_Store

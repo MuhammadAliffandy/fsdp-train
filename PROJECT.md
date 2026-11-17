@@ -1,0 +1,100 @@
+# FSDP Segmentation Experiment
+
+## Status
+
+Working direction agreed: public frontal-sinus pseudo-label experiment, followed by supervised fine-tuning with private NIfTI labels. Dataset audit, label semantics, split, and training settings remain pending.
+
+## Project goal
+
+Design and run a reproducible public frontal-sinus experiment using pseudo-labels, then use the available private NIfTI image/mask dataset for supervised fine-tuning and evaluation. The long-term clinical target is the frontal sinus drainage pathway (FSDP); the exact relationship between that target and the private mask label still needs confirmation. A frontal sinus mask must not be assumed to equal an FSDP mask.
+
+The eventual product may be a website or mobile application, depending on the workflow and user needs. Product design and implementation are outside this experiment's current scope.
+
+## Current proposed sequence
+
+1. Inspect public CT and private NIfTI geometry, image coverage, and label values.
+2. Generate and review TotalSegmentator frontal-sinus pseudo-labels on suitable public CT scans.
+3. Convert accepted pseudo-labeled cases to the SAM-Med3D training layout and establish a public pseudo-label agreement baseline.
+4. Confirm the private label definition, then define a patient-level fine-tuning and held-out evaluation split.
+5. Fine-tune and evaluate on private data; preserve code, configs, logs, and checkpoints.
+
+Each step that changes the experiment direction will be reviewed together before proceeding.
+
+## Public dataset under consideration
+
+**NasalSeg Dataset for Nasal Cavity and Paranasal Sinuses Segmentation from CT Images**
+
+- Record: [Zenodo 13893419](https://zenodo.org/records/13893419)
+- DOI: `10.5281/zenodo.13893419`
+- Published version shown on the record: v2, October 5, 2024
+- Record description: 130 CT scans with pixel-wise labels for five structures: left and right nasal cavity, nasopharynx, and left and right maxillary sinus.
+- Listed archive: `NasalSeg.zip`, 224 MB.
+
+### Dataset-to-goal fit: unresolved blocker
+
+The Zenodo record's description does not list the frontal sinus or FSDP among its annotated structures. Therefore, it does not currently establish that the public labels can train or directly evaluate an FSDP segmentation model. Before training, we need to inspect the archive and its documentation to verify the label map and determine whether there are relevant target labels. If there are none, we must choose a defensible alternative, such as a clearly scoped adjacent-structure benchmark, before calling the result an FSDP experiment.
+
+The dataset's license field was not clear in the record metadata reviewed so far; verify the license and permitted use before distributing data or derived artifacts.
+
+## Model selection
+
+The intended architecture is confirmed as **SAM-Med3D**.
+
+References: [official repository](https://github.com/uni-medical/SAM-Med3D), [paper](https://arxiv.org/abs/2310.15161).
+
+No claim is made here that this model is already suitable for FSDP or that its released checkpoint can directly produce semantic anatomical labels without an agreed prompting/training setup.
+
+## Open-data research: current findings
+
+Searches for public CT datasets labeled for the frontal sinus drainage pathway or frontal recess did not identify an openly downloadable, annotated dataset for the pathway itself. A useful additional finding is that an open-source model can produce a frontal sinus mask, and a sinus CT dataset may contain relevant surrounding anatomy; neither finding establishes a public ground-truth FSDP training set.
+
+| Resource | What it contains | Access and fit for FSDP |
+|---|---|---|
+| [NasalSeg, Zenodo 13893419](https://zenodo.org/records/13893419) | 130 CT scans; five labels: bilateral nasal cavities, nasopharynx, and bilateral maxillary sinuses. | Open access, but no frontal sinus or FSDP label. Not a direct supervised FSDP dataset. |
+| [CT-SCOPE, Zenodo 15085103](https://zenodo.org/records/15085103) | Paranasal sinus CT from 40 subjects; 13 subjects have manual slice masks of surrounding osseous structures, with additional pseudo-labels. | The record currently marks the files as restricted. It is not presently an openly downloadable dataset, and the labels are osseous structures rather than FSDP. |
+| [Frontal sinus CBCT segmentation study](https://www.nature.com/articles/s41598-024-62211-y) | Reports radiologist-labeled frontal sinus masks on 50 CBCT scans for a frontal sinus segmentation task. | The study is not evidence that the scans and masks are publicly downloadable. The target is the frontal sinus, not its drainage pathway. Data availability needs direct confirmation from the authors/repository before considering it. |
+| [TotalSegmentator `craniofacial_structures`](https://github.com/wasserth/TotalSegmentator) | Its released CT model outputs a `sinus_frontal` class, along with other craniofacial structures. | A useful frontal-sinus inference baseline or candidate pseudo-label source. The repository says this task is trained on a small separate dataset and may be less robust. Public model/code availability does not mean the training images and ground-truth masks for this class are available as a dataset. Its task-specific model license also needs review before use. |
+| [Deep learning multi-class paranasal sinus study](https://pmc.ncbi.nlm.nih.gov/articles/PMC10975213/) | Labels frontal, ethmoid, sphenoid, and maxillary sinus regions in a clinical CT study. | The paper describes a collected clinical dataset; this search did not establish public access to the scans and masks. Labels do not isolate FSDP. |
+| [SinusSegment](https://github.com/rheadkaul/SinusSegment) | Open segmentation code for five paranasal sinuses and nasal cavity. | Repository instructions expect users to supply CT volumes and masks. Code availability is not dataset availability; target is sinus/cavity segmentation, not FSDP. |
+
+Sources reviewed also describe NasalSeg's exact label map and CT-SCOPE's file restrictions: [NasalSeg paper](https://www.nature.com/articles/s41597-024-04176-1), [CT-SCOPE paper](https://pmc.ncbi.nlm.nih.gov/articles/PMC12398895/).
+
+### Research conclusion
+
+Based on the sources checked so far, there is no confirmed openly downloadable dataset with ground-truth FSDP annotations ready for supervised training and direct FSDP evaluation. There is at least one available model that predicts frontal sinus masks (TotalSegmentator), and there are research datasets/studies with frontal sinus labels, but the identified annotated cohorts are not openly downloadable. A frontal sinus label is not a valid substitute for a drainage-pathway label. This conclusion is limited to the datasets and publications located in this research pass; it is not proof that no such dataset exists anywhere.
+
+The working public-data direction is to use suitable public CT images with TotalSegmentator frontal-sinus pseudo-labels for a SAM-Med3D pipeline experiment. This provides no independent ground-truth evaluation. Agreement with the pseudo-labels must not be reported as clinical or expert-label accuracy.
+
+## Proposed public-to-private experiment path
+
+Given the current data situation, the practical candidate is a pseudo-label public experiment, followed by fine-tuning and evaluation on the private ground-truth labels:
+
+1. **Public image source:** start with the open NasalSeg CT images, after inspecting scan coverage and confirming that the frontal sinus is included at adequate resolution. Do not assume its published masks label the frontal sinus; they do not.
+2. **Public pseudo-label generation:** run TotalSegmentator's `craniofacial_structures` task and extract `sinus_frontal`. Visually inspect a sample of masks for coverage, laterality/label convention, and gross failures. These are model-generated labels, not expert ground truth.
+3. **Public model experiment:** train/fine-tune SAM-Med3D on the public CT images and accepted pseudo-labels. Report this as learning from pseudo-labels. A score against the same pseudo-label source measures agreement with TotalSegmentator, not anatomical accuracy.
+4. **Private supervised stage:** fine-tune using the private `.nii.gz` images and their existing frontal sinus masks, once label semantics, geometry, and train/validation/test split are checked. Keep a patient-level held-out test set untouched until final evaluation.
+5. **Final evaluation:** report results against private expert labels on the held-out test set. Keep the public pseudo-label agreement results separate from this ground-truth evaluation.
+
+The working design is approved for dataset preparation, but model training configuration is still open. The main go/no-go checks are whether NasalSeg images include the target region and whether TotalSegmentator's sinus output is anatomically acceptable on those scans. If either fails, seek access to the CBCT cohort or move to annotation/access planning rather than treating pseudo-labels as truth.
+
+The TotalSegmentator project also links a public 1,939-CT segmentation dataset, but that dataset description covers 117 structures and does not establish that the `sinus_frontal` task's separate training labels are included. Do not assume it is a direct frontal-sinus training dataset.
+
+## Experiment design decisions still open
+
+- What exactly counts as FSDP: anatomical boundaries, laterality, and whether the output is a binary mask, multiple classes, or a pathway/landmark representation.
+- Whether the public dataset contains usable labels for the selected task.
+- SAM-Med3D checkpoint and license to use for the selected experiment.
+- Training from a released checkpoint versus training from scratch; which parameters to fine-tune.
+- Data split unit and strategy, including patient-level separation and any external validation.
+- Preprocessing: voxel spacing, orientation, intensity windowing, cropping, and patch/volume strategy.
+- Metrics and reporting, for example per-class Dice and surface-distance measures, selected to match the clinical geometry and task.
+- Available compute (GPU model and memory), training time, and storage limits.
+- How expert annotations or adjudication will be obtained if the public labels do not cover the target.
+
+## Proposed record of each run
+
+For every approved run, record the dataset version and checksum, subject IDs per split, label mapping, preprocessing parameters, repository commit, checkpoint source, configuration, random seed, hardware, metrics, and known failure cases. Keep private data and its identifiers out of public logs and artifacts.
+
+## Immediate preparation gate
+
+Run the NIfTI audit on the public images and private image/mask pairs on DGX. Review image coverage, voxel spacing/orientation, and the private mask value map before resampling, cropping, pseudo-label generation, or any patient split. Training starts only after these findings are recorded and the split protocol is agreed.
