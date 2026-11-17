@@ -155,7 +155,7 @@ python -u scripts/audit_private_dataset.py \
   | tee outputs/private/audit_summary.log
 ```
 
-The script matches identical NIfTI basenames, allowing an image-only `_0000` suffix. It checks all pairs for 3D geometry, label values, and empty masks. Ambiguous pairs are reported rather than guessed. The console summary includes a redacted structural description of `held_out_test_set_30percent.json`; it does not apply or infer a split. Detailed case IDs and paths remain in the ignored `outputs/private/audit.json` on DGX. Use the audit results to define the target IDs and interpret the existing split before creating private training/validation folders. Private supervised fine-tuning should use a new run/checkpoint initialization, not `RESUME=latest` of the public experiment.
+The script matches NIfTI basenames, allowing an image-only `_0000` suffix and the confirmed label suffix `-label` (for example `subject.nii.gz` pairs with `subject-label.nii.gz`). It checks all pairs for 3D geometry, label values, and empty masks. Ambiguous pairs are reported rather than guessed. The console summary includes a redacted structural description of `held_out_test_set_30percent.json` and counts how many `test_set` entries match paired case IDs; it does not apply a split. Detailed case IDs and paths remain in the ignored `outputs/private/audit.json` on DGX. Use the audit results to define the target IDs and interpret the existing split before creating private training/validation folders. Private supervised fine-tuning should use a new run/checkpoint initialization, not `RESUME=latest` of the public experiment.
 
 ## DGX workflow
 

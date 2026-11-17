@@ -20,7 +20,7 @@ def schema(value, depth=0):
     if isinstance(value, dict):
         if depth > 3:
             return {"type": "dict", "length": len(value)}
-        known = {"train", "val", "validation", "test", "held_out", "held_out_test", "test_cases", "held_out_test_set", "case_ids", "patients", "cases", "splits", "seed", "test_size", "train_cases", "test_patients", "train_patients"}
+        known = {"train", "val", "validation", "test", "test_set", "held_out", "held_out_test", "test_cases", "held_out_test_set", "case_ids", "patients", "cases", "splits", "seed", "test_size", "train_cases", "test_patients", "train_patients"}
         return {"type": "dict", "length": len(value),
                 "fields": {key: schema(item, depth + 1) for key, item in value.items() if key in known},
                 "other_key_count": sum(key not in known for key in value)}
@@ -42,6 +42,8 @@ def main():
                 key = nifti_id(path)
                 if folder == "imagesTr":
                     key = key.removesuffix("_0000")
+                else:
+                    key = key.removesuffix("-label")
                 index[key].append(path)
 
     rows, values = [], set()
@@ -78,14 +80,25 @@ def main():
 
     split = root / "held_out_test_set_30percent.json"
     split_schema = None
+    heldout_membership = None
     if split.is_file():
         try:
-            split_schema = schema(json.loads(split.read_text(encoding="utf-8")))
+            split_data = json.loads(split.read_text(encoding="utf-8"))
+            split_schema = schema(split_data)
+            entries = split_data.get("test_set") if isinstance(split_data, dict) else None
+            if isinstance(entries, list) and all(isinstance(entry, str) for entry in entries):
+                test_ids = [nifti_id(Path(entry)).removesuffix("-label").removesuffix("_0000") for entry in entries]
+                paired_ids = {row["case_id"] for row in rows if len(row["images"]) == len(row["labels"]) == 1}
+                heldout_membership = {"entries": len(entries), "unique_ids": len(set(test_ids)),
+                                      "matched_pairs": len(set(test_ids) & paired_ids),
+                                      "unmatched_ids": len(set(test_ids) - paired_ids),
+                                      "duplicate_entries": len(test_ids) - len(set(test_ids))}
         except (ValueError, OSError) as error:
             split_schema = {"error_type": type(error).__name__}
     summary = {"image_files": sum(map(len, images.values())), "label_files": sum(map(len, labels.values())),
                "case_keys": len(rows), "status_counts": dict(Counter(row["status"] for row in rows)),
                "label_values": sorted(values), "heldout_json_found": split.is_file(), "heldout_schema": split_schema,
+               "heldout_membership": heldout_membership,
                "label_candidates": {folder.name: sum(p.is_file() and p.name.endswith((".nii", ".nii.gz")) for p in folder.iterdir())
                                     for folder in root.glob("labels*") if folder.is_dir()}}
     args.output.parent.mkdir(parents=True, exist_ok=True)
