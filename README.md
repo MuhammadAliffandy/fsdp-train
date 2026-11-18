@@ -342,6 +342,28 @@ python -u scripts/verify_private_pipeline.py \
 
 Regression tests: `python -m unittest discover -s tests -v`. The 54-sample accumulation test compares learned parameters with an independent explicit-window reference, including the partial final window.
 
+## Audit the epoch-20 validation-best checkpoint
+
+The v2 run stopped at epoch 70 with the selected checkpoint at epoch 20 (validation Dice about 0.12696). The last epoch's training Dice was about 0.96439. Before assigning this gap entirely to overfitting, use the same frozen model, no augmentation, and the identical inference/prompt protocol on train and validation:
+
+```bash
+cd ~/raid/Clara/fsdp-train
+git pull origin main
+conda activate fsdp-med3d
+bash scripts/launch_best_audit_nohup.sh
+tail -n 80 -F logs/audit/latest.log
+```
+
+After completion:
+
+```bash
+cat outputs/private/best_checkpoint_audit/latest/summary.json
+```
+
+Default selection is the most recently completed v2 run with a `summary.json`. Set `PRIVATE_V2_RUN_DIR=/absolute/path/to/runs/<run>` to select it explicitly. The script verifies the frozen manifest/checkpoint training path and uses only train/validation image files. It compares 1/5-click full-target Dice, crop Dice, precision, recall, and crop retention; both splits use eval mode, deterministic per-case oracle clicks, and no flips. It records the logged training metric at the selected epoch separately because that statistic comes from the original training process. Validation must reproduce the saved best-checkpoint summary within 1e-4 or the audit exits with an error.
+
+`train_ranked_cases.csv`, `val_ranked_cases.csv`, and `cases.csv` contain all case metrics. Six overlay PNGs show the best/middle/worst train and validation cases at 5 clicks, with matching crop predictions. The 20 test patients remain untouched. A high frozen-model train score with low validation score supports a generalization gap under this protocol; if frozen train scores are also low, examine protocol/measurement differences and actual overlays before further training.
+
 ## DGX workflow
 
 1. Clone the repository.
