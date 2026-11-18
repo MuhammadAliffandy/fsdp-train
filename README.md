@@ -261,6 +261,71 @@ Each stage evaluates all 10 validation cases at 1 and 5 clicks, with the same ca
 
 The highest 5-click validation score among these three candidates is reported using the existing `selected_by_validation` field; this is a comparison at a fixed click budget, not a search across all possible checkpoints or settings. Inspect stage scores, paired changes, and overlays before deciding whether to change initialization, preprocessing, or fine-tuning. Findings about transfer are limited to this assisted ROI/prompt protocol.
 
+## Verify the pipeline, then run the 800-epoch private experiment
+
+The [SAM-Med3D paper, section 4.2](https://arxiv.org/html/2310.15161v3#S4.SS2), reports 800 epochs for its first pretraining stage using 131K masks. This is evidence for that large-scale pretraining schedule, not a guarantee that private FSDP fine-tuning needs 800 epochs or will reach Dice 0.8. Here 800 is an explicit experimental budget, with checkpoint selection on the 10 validation patients.
+
+Code inspection of the [upstream training loop](https://github.com/uni-medical/SAM-Med3D/blob/main/train.py) found an accumulation defect: it steps at zero-based batches 8,16,...,48 with 54 batches and accumulation=8. The first window contains 9 samples and the final 5 samples' accumulated gradients are discarded at the next epoch's zero_grad. The corrected loop uses 8-sample windows plus a final 6-sample window: 7 updates per epoch rather than 6 when AMP does not skip updates. This is a real implementation issue; its contribution to low Dice has not yet been isolated.
+
+```bash
+cd ~/raid/Clara/fsdp-train
+git pull origin main
+conda activate fsdp-med3d
+bash scripts/launch_private_long_nohup.sh
+tail -n 80 -F logs/training/latest.log
+```
+
+The entire pipeline runs under nohup. First `verify_private_pipeline.py`:
+
+- checks the saved diagnostics' frozen manifest checksum;
+- checks original CT pixels, scalar geometry, and original labels 1/9 against all 54 prepared train and 10 validation pairs;
+- records training-style crop retention and CT/normalized target intensities in `pipeline_cases.csv`;
+- independently recalculates Dice from the 10 saved prediction/GT crop files, checks it against the CSV, and reconstructs GT crops using physical-space resampling to verify their saved geometry;
+- copies the best, middle, and worst validation overlays into the preflight folder for manual review.
+
+The 20 test image/label files are not read. A failed numerical consistency check stops the worker before training. Original data and the frozen split are not edited. Preflight artifacts are at `outputs/private/preflight/latest/verification.json` and `outputs/private/preflight/latest/*overlay.png`. These checks cannot establish anatomical annotation correctness or guarantee the absence of every coordinate/model bug; actual overlays still need review.
+
+When preflight passes, the worker starts `train_private_long.py` in a new ignored `runs/fsdp_private_v2_<timestamp>_<pid>/` directory. Defaults:
+
+- original turbo initialization (direct turbo-to-private), all modules trainable;
+- 800 epochs, batch size 1, accumulation 8, gradient norm clip 1;
+- AdamW, LR `2e-5` for all parameters, weight decay 0.1; five-epoch warmup and cosine decay to 5% of base LR;
+- training-matched native GT-centered 128-cube crop and `ZNormalization(x>0)`, random flips on three voxel axes;
+- 5 oracle point interactions with the latest point and detached previous mask; per-click DiceCE losses are averaged, with no random prompt dropout;
+- probability threshold 0.5 for both train and validation metrics;
+- initial validation, then validation at epoch 1, every 10 epochs, and the final epoch; checkpoint selection by mean validation full-target Dice at 5 clicks.
+
+This is a revised experiment, not a pure epoch-count ablation: initialization, optimizer parameter-group LR, accumulation, prompt/dropout handling, loss averaging, clipping, and LR schedule differ from the first private run. Old training loss/Dice must not be directly compared as if their protocols were identical. In particular the first trainer summed click losses and used smaller prompt/decoder learning rates. Results remain GT-assisted segmentation measurements, not automatic full-volume detection.
+
+The run stores `config.json` with code/data/initial-weight hashes, `history.csv`, `progress.json`, `validation_initial.csv`, `validation_latest.csv`, and `validation_best.csv`. `sam_model_val_best.pth` is selected by validation, while `sam_model_latest.pth` supports recovery. Latest is saved at validation intervals, on validation improvement, and at completion; the initial state is also saved. A crash can lose up to the unsaved interval of work. Saves use a temporary file and atomic rename. Resume restores model, optimizer, scheduler, AMP scaler, and RNG states and refuses incompatible code/config/data. Preprocessed CPU crops are cached; use one worker to avoid duplicate caches and preserve the tested resume behavior.
+
+When the run completes, `summary.json` reports the selected validation epoch and `best_validation/` contains its per-case metrics and overlays. An initial checkpoint can remain best if training never improves validation. No Dice target is promised.
+
+Monitor the printed run name:
+
+```bash
+cat outputs/private/preflight/latest/verification.json
+cat runs/<printed_run_name>/progress.json
+```
+
+To resume, repeat the original settings and provide its name:
+
+```bash
+LONG_RUN_NAME=fsdp_private_v2_<timestamp>_<pid> RESUME=1 \
+  bash scripts/launch_private_long_nohup.sh
+```
+
+Optional launch overrides include `NUM_EPOCHS`, `VAL_EVERY`, `LEARNING_RATE`, `ACCUMULATION_STEPS`, `TRAIN_CLICKS`, `SEED`, `GPU_ID`, `INITIAL_CHECKPOINT`, `PRIVATE_DATA_DIR`, and `DIAGNOSTICS_DIR`. The last should point to a completed diagnostic folder with saved private CT/target/prediction crops. Resume requires the same values as the original run. For a standalone preflight before allocating a long GPU run:
+
+```bash
+python -u scripts/verify_private_pipeline.py \
+  --data-dir data/processed/private/fsdp \
+  --diagnostics outputs/private/diagnostics/latest \
+  --output-dir outputs/private/preflight/manual_check_01
+```
+
+Regression tests: `python -m unittest discover -s tests -v`. The 54-sample accumulation test compares learned parameters with an independent explicit-window reference, including the partial final window.
+
 ## DGX workflow
 
 1. Clone the repository.
