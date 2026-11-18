@@ -14,8 +14,6 @@ if [[ -n "${EXPERT_MAPPING_JSON:-}" ]]; then
   COMMAND+=(--mapping-json "$EXPERT_MAPPING_JSON")
 elif [[ "${EXPERT_IDS_CONFIRMED:-0}" == "1" ]]; then
   COMMAND+=(--confirm-shared-label-ids)
-elif [[ -f "$PROJECT_DIR/configs/private_expert_labels.json" ]]; then
-  COMMAND+=(--mapping-json "$PROJECT_DIR/configs/private_expert_labels.json")
 else
   echo "Expert mapping not confirmed: inventory-only mode (no agreement Dice yet)."
 fi

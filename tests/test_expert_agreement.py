@@ -11,6 +11,7 @@ import SimpleITK as sitk
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 from audit_expert_agreement import agreement, audit, index_files
+from audit_label_correspondence import audit as correspondence_audit, counts, summarize
 
 
 class AgreementTests(unittest.TestCase):
@@ -52,7 +53,8 @@ class AgreementTests(unittest.TestCase):
                     second[second == 1] = 0
                     second[1, 1, 2:4] = 1
                 third = ref.copy()
-                third[third == 1] = 0
+                if index != 0:
+                    third[third == 1] = 0
                 for folder, values, filename in [
                     ('labelsTr', ref, f'{key}-label.nii.gz'), ('labels_exp1', ref, f'{key}.nii.gz'),
                     ('labels_exp2', second, f'{key}_label_exp2.nii.gz'), ('labels_exp3', third, f'{key}-label.nii.gz')]:
@@ -88,6 +90,14 @@ class AgreementTests(unittest.TestCase):
                 inventory = audit(root, manifest, Path(directory) / 'inventory')
             self.assertEqual(inventory['mode'], 'inventory_only_mapping_pending')
             self.assertEqual(inventory['pairwise_agreement'], [])
+            with contextlib.redirect_stdout(io.StringIO()):
+                correspondence = correspondence_audit(root, manifest, Path(directory) / 'correspondence')
+            self.assertTrue(correspondence['complete'])
+            self.assertFalse(correspondence['semantic_mapping_verified'])
+            self.assertFalse(correspondence['test_images_read'])
+            candidate = next(row for row in correspondence['candidates'] if row['source'] == 'labels_exp2' and row['expert_raw_value'] == 1)
+            self.assertEqual(candidate['top_reference_overlap_candidates'][0]['reference_value'], 1)
+            self.assertEqual(candidate['top_reference_overlap_candidates'][0]['mean_patient_dice_nonempty'], .5)
             altered = root / 'labels_exp2' / f'{ids[0]}_label_exp2.nii.gz'
             label = sitk.ReadImage(str(altered))
             label.SetOrigin((10., 20., 30.))
@@ -98,6 +108,43 @@ class AgreementTests(unittest.TestCase):
             self.assertFalse(failed['complete'])
             self.assertEqual(failed['fully_comparable_patients'], 53)
             self.assertEqual(failed['issues'], 1)
+            with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(ValueError):
+                correspondence_audit(root, manifest, Path(directory) / 'correspondence_mismatch')
+            partial = json.loads((Path(directory) / 'correspondence_mismatch/summary.json').read_text())
+            self.assertFalse(partial['complete'])
+            self.assertEqual(partial['compared_patients']['labels_exp1'], 53)
+            label.CopyInformation(sitk.ReadImage(str(root / 'imagesTr' / f'{ids[0]}.nii.gz')))
+            sitk.WriteImage(label, str(altered))
+            for folder in ('labels_exp1', 'labels_exp2', 'labels_exp3'):
+                for path in (root / folder).glob('*.nii.gz'):
+                    image = sitk.ReadImage(str(path))
+                    array = sitk.GetArrayFromImage(image)
+                    array[array == 9] = 2
+                    changed = sitk.GetImageFromArray(array)
+                    changed.CopyInformation(image)
+                    sitk.WriteImage(changed, str(path))
+            with contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(ValueError, 'target IDs absent'):
+                audit(root, manifest, Path(directory) / 'absent_ids', confirmed=True)
+            unsupported = json.loads((Path(directory) / 'absent_ids/summary.json').read_text())
+            self.assertFalse(unsupported['complete'])
+            self.assertEqual(unsupported['mode'], 'mapping_unsupported')
+            self.assertEqual(unsupported['pairwise_agreement'], [])
+            self.assertEqual(sum(row['asserted_id'] == 9 for row in unsupported['mapping_issues']), 3)
+            self.assertFalse((Path(directory) / 'absent_ids/agreement_heatmap.png').exists())
+
+    def test_raw_correspondence_counts_absent_labels_and_bilateral_union(self):
+        reference = np.array([0, 1, 1, 9, 9, 3], dtype=np.uint8)
+        expert = np.array([0, 2, 2, 2, 2, 1], dtype=np.uint8)
+        ref, raw, overlap = counts(reference, expert)
+        cases = [{'ref': ref, 'raw': raw, 'overlap': overlap},
+                 {'ref': {0: 6}, 'raw': {0: 6}, 'overlap': {0: {0: 6}}}]
+        rows = summarize(cases, [0, 1, 2], {1: 'RFSDP', 9: 'LFSDP', 3: 'RSAC'})
+        union = next(row for row in rows if row['expert_raw_value'] == 2 and row['reference_value'] == '1+9')
+        self.assertEqual(union['mean_patient_dice_nonempty'], 1)
+        self.assertEqual(union['pooled_voxel_dice'], 1)
+        self.assertEqual(union['both_empty_pairs'], 1)
+        self.assertEqual(union['overlap_voxels'], 4)
+        self.assertEqual(overlap[0][0], 1)
 
     def test_filename_collisions_remain_ambiguous(self):
         with tempfile.TemporaryDirectory() as directory:

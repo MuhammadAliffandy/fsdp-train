@@ -198,15 +198,26 @@ def audit(root, manifest_path, output, confirmed=False, mapping_path=None):
                               'minimum_dice_nonempty': min(nonempty) if nonempty else None,
                               'maximum_dice_nonempty': max(nonempty) if nonempty else None,
                               'mean_centroid_distance_mm': float(np.mean(distances)) if distances else None})
-    complete = verified_mapping and complete_cases == len(ids) and not issues
-    summary = {'mode': 'agreement' if verified_mapping else 'inventory_only_mapping_pending', 'complete': complete,
+    mapping_issues = [{'source': source, 'target': side, 'asserted_id': value,
+                       'reason': 'Asserted target ID absent across the entire training cohort; verify annotation scope and semantics'}
+                      for source, values in mapping.items() for side, value in values.items()
+                      if verified_mapping and value not in all_values[source]]
+    supported_mapping = verified_mapping and not mapping_issues
+    complete = supported_mapping and complete_cases == len(ids) and not issues
+    if mapping_issues:
+        # Preserve the arithmetic for diagnosis without endorsing the anatomical names.
+        (output / 'unverified_mapping_metrics.json').write_text(json.dumps(aggregate, indent=2))
+        if (output / 'case_agreement.csv').exists():
+            (output / 'case_agreement.csv').rename(output / 'unverified_mapping_case_metrics.csv')
+    summary = {'mode': 'mapping_unsupported' if mapping_issues else 'agreement' if verified_mapping else 'inventory_only_mapping_pending', 'complete': complete,
                'train_patients': len(ids), 'fully_comparable_patients': complete_cases,
                'label_values': {source: sorted(values) for source, values in all_values.items()},
                'unrecognized_nifti_names': unknown, 'issues': len(issues),
-               'pairwise_agreement': aggregate if verified_mapping else [],
+               'mapping_issues': mapping_issues,
+               'pairwise_agreement': aggregate if supported_mapping else [],
                'validation_images_read': False, 'test_images_read': False,
                'empty_pair_policy': 'Both-empty targets omitted from Dice averages and counted separately; one-empty Dice is 0',
-               'interpretation': 'Annotation consistency evidence; not a mathematical model-performance ceiling',
+               'interpretation': 'Target IDs absent: no anatomical agreement conclusion' if mapping_issues else 'Annotation consistency evidence conditional on supplied semantics; not a mathematical model-performance ceiling',
                'artifacts': str(output)}
     protocol = {'root': str(root), 'manifest_sha256': hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
                 'audit_script_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
@@ -214,12 +225,14 @@ def audit(root, manifest_path, output, confirmed=False, mapping_path=None):
                 'mapping_sha256': hashlib.sha256(mapping_path.read_bytes()).hexdigest() if mapping_path else None,
                 'patients': ids, 'reference': 'labelsTr remains final reference; no consensus or training data written',
                 'geometry_policy': 'Exact-size and physical-geometry tolerance checks; mismatches excluded from all-rater comparisons'}
-    write_csv(output / 'pairwise_summary.csv', aggregate if verified_mapping else [])
+    write_csv(output / 'pairwise_summary.csv', aggregate if supported_mapping else [])
     if complete:
         heatmap(output / 'agreement_heatmap.png', aggregate, len(ids))
     (output / 'protocol.json').write_text(json.dumps(protocol, indent=2))
     (output / 'summary.json').write_text(json.dumps(summary, indent=2, allow_nan=False))
     print(json.dumps(summary, indent=2), flush=True)
+    if mapping_issues:
+        raise ValueError('Asserted target IDs absent; inspect mapping_issues and verify per-expert semantics before agreement')
     if issues:
         raise ValueError('Audit incomplete; inspect issues.json before interpreting partial agreement')
     return summary
