@@ -364,6 +364,28 @@ Default selection is the most recently completed v2 run with a `summary.json`. S
 
 `train_ranked_cases.csv`, `val_ranked_cases.csv`, and `cases.csv` contain all case metrics. Six overlay PNGs show the best/middle/worst train and validation cases at 5 clicks, with matching crop predictions. The 20 test patients remain untouched. A high frozen-model train score with low validation score supports a generalization gap under this protocol; if frozen train scores are also low, examine protocol/measurement differences and actual overlays before further training.
 
+## Check prompt coordinates after reviewing overlays
+
+The supplied overlays show partial coverage and predicted regions separated from GT on the selected planes. They support the low-overlap findings, but three displayed slices cannot establish a global transform error or an empty 3D prediction. A code-level candidate is the [upstream prompt encoder](https://github.com/uni-medical/SAM-Med3D/blob/main/segment_anything/modeling/prompt_encoder3D.py): dense positional features use the second tensor axis as their first coordinate, while sparse point features use the incoming coordinate order. A CPU check on the official module found that swapping the first two point coordinates reconciles those positional features at non-diagonal cell centers of the 128/8 cubic grid. Because the released weights may have learned with that convention, inference quality must be checked independently before changing training.
+
+```bash
+cd ~/raid/Clara/fsdp-train
+git pull origin main
+conda activate fsdp-med3d
+bash scripts/launch_prompt_audit_nohup.sh
+tail -n 80 -F logs/prompt_audit/latest.log
+```
+
+After completion:
+
+```bash
+cat outputs/private/prompt_audit/latest/summary.json
+```
+
+The A/B audit uses the completed v2 run's validation-best checkpoint and the same 10 validation patients. Set `PRIVATE_V2_RUN_DIR` to select the run explicitly. `native` forwards points unchanged; `swap_xy` exchanges only the two coordinates entering the prompt encoder. Dense image features, CT/GT arrays, prior-mask feedback, threshold, and click budgets are unchanged. First sampled voxel coordinates are identical; subsequent oracle error clicks can differ as predictions differ. `prompt_traces.json` records the original voxel coordinates, encoder input coordinates, and labels at every click. No model parameters are updated, and train/test images are not read.
+
+`position_encoding_contract` in `summary.json` tests the actual loaded encoder, not an assumed repository version. It compares sparse and dense features at non-diagonal embedding-cell centers, reporting errors and cosine similarities for both coordinate orders. `native_reproduces_saved_validation` must be true before attributing any performance changes to the coordinate setting. The summary compares Dice/precision/recall; `cases.csv` and `paired_changes.csv` retain per-patient results. Each mode has 10 distinctly named overlays and crop predictions in its own folder. A positional-feature mismatch alone is not sufficient evidence to declare the swap a model fix; use the validation A/B scores and images.
+
 ## DGX workflow
 
 1. Clone the repository.
