@@ -54,19 +54,22 @@ def sparse_scores(predicted, target):
             'true_positive_voxels': intersection}
 
 
-def prepare_samples(source_root, data, manifest, run, seed):
+def prepare_samples(source_root, data, manifest, run, seed, split='train'):
     source_root, data = source_root.expanduser().resolve(), data.resolve()
-    ids = select_patients(manifest, seed)
+    training_ids = select_patients(manifest, seed)
+    if split not in ('train', 'val'):
+        raise ValueError('Only training diagnostic or frozen validation data are supported')
+    ids = training_ids if split == 'train' else sorted(manifest['splits']['val'])
     records = {row['patient_id']: row for row in manifest['cases']}
     inputs = run / 'inputs'
     inputs.mkdir()
     samples, patients, provenance = [], {}, []
     for index, key in enumerate(ids, 1):
-        alias = f'train_{index:02d}'
+        alias = f'{split}_{index:02d}'
         record = records[key]
         image_path, label_path = [Path(record[field]).resolve() for field in ('source_image', 'source_label')]
-        if record['split'] != 'train' or not image_path.is_relative_to(source_root / 'imagesTr') or not label_path.is_relative_to(source_root / 'labelsTr'):
-            raise ValueError('Selected source is not an original training image/final label')
+        if record['split'] != split or not image_path.is_relative_to(source_root / 'imagesTr') or not label_path.is_relative_to(source_root / 'labelsTr'):
+            raise ValueError(f'Selected source is not an original {split} image/final label')
         with (source_root / 'ColorTable' / f'{key}_ColorTable.csv').open(encoding='utf-8-sig', newline='') as stream:
             colors = {int(row['LabelValue']): row['Name'].strip().upper() for row in csv.DictReader(stream)}
         if colors.get(1) != 'RFSDP' or colors.get(9) != 'LFSDP':
@@ -79,12 +82,12 @@ def prepare_samples(source_root, data, manifest, run, seed):
         if not np.isfinite(label).all() or not np.equal(label, np.floor(label)).all() or not np.isin(label, range(18)).all():
             raise ValueError('Invalid original final-label values')
         bilateral = np.isin(label, [1, 9])
-        prepared = data / 'train/ct_private'
+        prepared = data / split / 'ct_private'
         if not same_geometry(geometry, header(prepared / 'imagesTr' / f'{key}.nii.gz')):
             raise ValueError('Prepared CT geometry differs from original')
         prepared_image = sitk.ReadImage(str(prepared / 'labelsTr' / f'{key}.nii.gz'))
         if not same_geometry(geometry, prepared_image) or not np.array_equal(sitk.GetArrayViewFromImage(prepared_image), bilateral):
-            raise ValueError('Prepared training target differs from original labelsTr 1/9')
+            raise ValueError(f'Prepared {split} target differs from original labelsTr 1/9')
         del prepared_image
         patients[alias] = {'shape': tuple(geometry.GetSize()),
                            'target_indices': np.flatnonzero(bilateral.transpose(2, 1, 0).reshape(-1))}
@@ -112,17 +115,18 @@ def prepare_samples(source_root, data, manifest, run, seed):
             samples.append({'case': alias, 'side': side, 'name': name, 'image': image, 'target': target,
                             'raw': raw, 'metadata': metadata, 'valid': valid, 'prompt_seed': seed + index * 10 + side_index})
         print(f'{alias}: both side ROIs prepared with 100% target retention', flush=True)
-    (run / 'selected_training_patients.json').write_text(json.dumps(provenance, indent=2))
+    name = 'selected_training_patients.json' if split == 'train' else 'selected_validation_patients.json'
+    (run / name).write_text(json.dumps(provenance, indent=2))
     return samples, patients
 
 
 @torch.inference_mode()
-def evaluate(model, samples, patients, device, export=None):
+def evaluate(model, samples, patients, device, export=None, progress_label=None):
     model.eval()
     side_rows, patient_rows, restored = [], [], {}
     if export is not None:
         export.mkdir(parents=True)
-    for sample in samples:
+    for index, sample in enumerate(samples, 1):
         predictions = infer_clicks(model, sample['image'].to(device), sample['target'].to(device), [1, 5], sample['prompt_seed'])
         for clicks, logits in predictions.items():
             prediction = logits > 0
@@ -136,6 +140,8 @@ def evaluate(model, samples, patients, device, export=None):
                 name = f"{sample['name']}_{clicks}_clicks"
                 save_crop(export / f'{name}_prediction_crop.nii.gz', prediction.astype(np.uint8), metadata)
                 overlay(export / f'{name}_overlay.png', sample['raw'], sample['target'][0, 0].numpy().astype(bool), prediction, metadata['target_retention'])
+        if progress_label:
+            print(f'{progress_label}: {sample["name"]} complete ({index}/{len(samples)})', flush=True)
     for (alias, clicks), parts in sorted(restored.items()):
         patient_rows.append({'case': alias, 'clicks': clicks,
                              **sparse_scores(np.concatenate(parts), patients[alias]['target_indices'])})

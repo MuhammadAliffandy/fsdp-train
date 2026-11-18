@@ -46,17 +46,17 @@ class ToySAM(torch.nn.Module):
         return self.bias + .01 * image_embeddings + .05 * torch.exp(-distance / 8), torch.zeros(1)
 
 
-def fixture(root):
+def fixture(root, image_split='train'):
     source = root / 'normal case_86'
     data = root / 'prepared'
     groups = {'train': [str(1000 + i) for i in range(54)], 'val': [str(2000 + i) for i in range(10)],
               'test': [str(3000 + i) for i in range(20)]}
     manifest = {'splits': groups, 'target': {'1': 'RFSDP', '9': 'LFSDP'}, 'cases': []}
-    selected = tiny.select_patients(manifest, 2026)
+    selected = tiny.select_patients(manifest, 2026) if image_split == 'train' else groups['val']
     for folder in ('imagesTr', 'labelsTr', 'ColorTable'):
         (source / folder).mkdir(parents=True)
     for folder in ('imagesTr', 'labelsTr'):
-        (data / 'train/ct_private' / folder).mkdir(parents=True)
+        (data / image_split / 'ct_private' / folder).mkdir(parents=True)
     for split, ids in groups.items():
         for key in ids:
             ct_path = source / 'imagesTr' / f'{key}.nii.gz'
@@ -77,10 +77,10 @@ def fixture(root):
             label.CopyInformation(ct)
             sitk.WriteImage(ct, str(ct_path))
             sitk.WriteImage(label, str(label_path))
-            (data / 'train/ct_private/imagesTr' / f'{key}.nii.gz').hardlink_to(ct_path)
+            (data / image_split / 'ct_private/imagesTr' / f'{key}.nii.gz').hardlink_to(ct_path)
             binary = sitk.GetImageFromArray(np.isin(labels, [1, 9]).astype(np.uint8))
             binary.CopyInformation(ct)
-            sitk.WriteImage(binary, str(data / 'train/ct_private/labelsTr' / f'{key}.nii.gz'))
+            sitk.WriteImage(binary, str(data / image_split / 'ct_private/labelsTr' / f'{key}.nii.gz'))
             (source / 'ColorTable' / f'{key}_ColorTable.csv').write_text('LabelValue,Name\n1,RFSDP\n9,LFSDP\n')
     (data / 'manifest.json').write_text(json.dumps(manifest))
     return source, data, manifest

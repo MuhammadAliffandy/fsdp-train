@@ -455,6 +455,30 @@ Overrides: `GPU_ID` (default 0), `TINY_EPOCHS` (200), `TINY_EVAL_EVERY` (5), `TI
 
 The first actual DGX tiny run completed 200 epochs, selecting epoch 190. Held-in bilateral patient Dice improved from 0.02022 to 0.79269 at five oracle clicks per side; mean side Dice was 0.79412 and minimum side Dice 0.77193. The configured 0.90 threshold was not reached. There were 798 successful updates and two AMP skips; validation/test were untouched. These are training-only memorization results. A fair next comparison needs the same side-ROI protocol on the 10 validation patients for original turbo, the prior full-cohort best checkpoint, and tiny best before choosing full-cohort retraining settings.
 
+## Compare side-ROI validation before full-cohort retraining
+
+This read-only comparison evaluates original Turbo, the previous v2 validation-best checkpoint, and tiny best on **all 10 frozen validation patients (20 side ROIs)**. Preprocessing, native-coordinate prompts, fixed per-side seeds, threshold and original-grid bilateral scoring are identical across checkpoints. It reads no training/test image content, creates no optimizer, and never replaces any checkpoint or changes annotations/splits.
+
+```bash
+cd ~/raid/Clara/fsdp-train
+git pull origin main
+conda activate fsdp-med3d
+GPU_ID=0 bash scripts/launch_side_validation_nohup.sh
+tail -n 80 -F logs/side_validation/latest.log
+```
+
+After completion:
+
+```bash
+cat outputs/private/side_validation/latest/summary.json
+```
+
+The default tiny source is `outputs/private/tiny_training/latest`. The previous v2 checkpoint is selected from `outputs/private/best_checkpoint_audit/latest/summary.json`, with its recorded SHA256 checked. Override `TINY_RUN_DIR` or `PRIVATE_V2_RUN_DIR` with explicit completed run directories if needed; `V2_AUDIT_SUMMARY` can point to another independent audit. `SAM_MED3D_DIR`, `TURBO_CHECKPOINT`, `PRIVATE_DATA_DIR`, `PRIVATE_SOURCE_ROOT`, `GPU_ID` and `SEED` are also supported. Both trained checkpoints must match the frozen manifest and the original Turbo initialization. Tiny best must match its completed summary/checksum and two-training-patient provenance; v2 best must match its completed epoch, saved config and declared training path. The source CT/final masks, per-patient ColorTables, full side-target retention, and prepared binary validation masks are verified before inference. Any missing/empty/truncated side or geometry mismatch stops the comparison rather than silently removing difficult validation patients.
+
+Artifacts include `comparison.csv`, `side_cases.csv`, `patient_cases.csv`, patient-matched `paired_changes_vs_turbo.csv`, and checkpoint/config/data provenance in `protocol.json`. Each checkpoint has per-side/per-patient CSVs and worst/middle/best patient overlays with physical prediction crops. Representative re-inference must reproduce its recorded score. A runtime failure marks `summary.json` as `complete: false` and writes `failure.json`; partial scores must not be interpreted as a complete cohort comparison.
+
+The primary comparison is **mean original-grid bilateral patient Dice** at a fixed click budget; per-side and minimum patient scores reveal missed sides. The tiny train/validation gap uses the held-in training reference copied from the previous completed run; training scans are not re-read. This is GT-assisted interactive validation: @1 uses two total clicks and @5 uses ten total clicks, plus GT-derived side crops. It is not a direct comparison with the old 0.12696 result using one bilateral ROI/five total clicks, and does not measure automatic deployment performance. Keep the 20 test patients reserved. After reviewing the actual validation results, choose the next full-cohort training configuration; this command does not launch training or promise a particular validation Dice.
+
 ## DGX workflow
 
 1. Clone the repository.
