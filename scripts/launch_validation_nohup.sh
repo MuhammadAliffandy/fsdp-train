@@ -13,6 +13,9 @@ if [[ ! -f "$PRIVATE_DATA_DIR/manifest.json" || ! -f "$SAM_MED3D_DIR/segment_any
   exit 1
 fi
 RUN_ID="private_validation_$(date -u +%Y%m%dT%H%M%SZ)_$$"
+if [[ "${COMPARE_STAGES:-0}" == "1" ]]; then
+  RUN_ID="stage_comparison_$(date -u +%Y%m%dT%H%M%SZ)_$$"
+fi
 OUTPUT_DIR="$PROJECT_DIR/outputs/private/diagnostics/$RUN_ID"
 LOG_DIR="$PROJECT_DIR/logs/validation"
 mkdir -p "$LOG_DIR" "$(dirname "$OUTPUT_DIR")"
@@ -22,6 +25,15 @@ COMMAND=(python -u "$PROJECT_DIR/scripts/evaluate_private_validation.py"
   --output-dir "$OUTPUT_DIR" --device cuda:0)
 if [[ -n "${PRIVATE_RUN_DIR:-}" ]]; then
   COMMAND+=(--run-dir "$PRIVATE_RUN_DIR")
+fi
+if [[ "${COMPARE_STAGES:-0}" == "1" ]]; then
+  COMMAND+=(--compare-stages)
+  if [[ -n "${TURBO_CHECKPOINT:-}" ]]; then
+    COMMAND+=(--turbo-checkpoint "$TURBO_CHECKPOINT")
+  fi
+  if [[ -n "${PUBLIC_CHECKPOINT:-}" ]]; then
+    COMMAND+=(--public-checkpoint "$PUBLIC_CHECKPOINT")
+  fi
 fi
 export CUDA_VISIBLE_DEVICES="${GPU_ID:-0}"
 nohup "${COMMAND[@]}" > "$LOG_FILE" 2>&1 < /dev/null &

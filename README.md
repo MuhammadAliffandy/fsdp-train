@@ -235,6 +235,32 @@ Prompt clicks are generated from GT/prediction disagreement; the latest click pl
 
 After the log reports completion, share `summary.json` and selected overlays to decide whether cropping, normalization, prompting, or training settings need revision. Keep the 20 test patients untouched during these decisions.
 
+## Compare original, public, and private weights
+
+The first validation completed all 10 cases with no failures. All three private checkpoint files gave the same scores at saved epoch 50: mean Dice 0.1111009692 at 1 click and 0.1067041250 at 5 clicks. Target retention was 100% with no empty crops, so lost target voxels from cropping do not explain these validation results. Identical scores alone do not prove that checkpoint tensors are identical. The next comparison changes only the weights while retaining the same validation split and preprocessing/prompt protocol.
+
+```bash
+cd ~/raid/Clara/fsdp-train
+git pull origin main
+conda activate fsdp-med3d
+bash scripts/compare_pretraining_nohup.sh
+tail -n 80 -F logs/validation/latest.log
+```
+
+After completion:
+
+```bash
+cat outputs/private/diagnostics/latest/summary.json
+```
+
+The stages are `turbo_original` (`ckpt/sam_med3d_turbo.pth`), `public_finetuned` (the actual initialization path recorded in the private checkpoint's args), and `private_finetuned` (that private run's latest checkpoint). The script does not guess a different public run when the recorded source is missing or ambiguous; use `PUBLIC_CHECKPOINT=/absolute/path/to/the/actual/public/checkpoint.pth` to supply it explicitly. `TURBO_CHECKPOINT` and `PRIVATE_RUN_DIR` can also override their respective sources. Original turbo checkpoints may contain a model state dictionary directly or under `model_state_dict`; both formats are supported. File paths, SHA256 checksums, and whether the public source was overridden are recorded in `protocol.json`.
+
+Each stage evaluates all 10 validation cases at 1 and 5 clicks, with the same case seeds and the same first positive click. Subsequent oracle clicks adapt to each model's errors, so their coordinates can differ across models. No retraining or test-image reading takes place. Each stage gets its own overlays and crop predictions; the private stage also exports CT/target crops. New runs preserve earlier diagnostic folders and update the same latest log/output links.
+
+`summary.json` and `checkpoint_comparison.csv` now include macro precision/recall, prediction-to-target voxel ratio, zero-prediction counts, zero-overlap counts, median Dice, and legacy-threshold Dice. Ratios above 1 indicate more predicted voxels than target voxels; they do not by themselves establish where the errors occur. `validation_cases.csv` contains TP/FP/FN counts and all case metrics. `paired_changes_vs_turbo.csv` records per-patient Dice differences between each fine-tuned stage and turbo. `validation_comparison.png` plots stage Dice/recall. Overlays use cyan GT and magenta prediction with translucent fill, including for predictions covering an entire slice.
+
+The highest 5-click validation score among these three candidates is reported using the existing `selected_by_validation` field; this is a comparison at a fixed click budget, not a search across all possible checkpoints or settings. Inspect stage scores, paired changes, and overlays before deciding whether to change initialization, preprocessing, or fine-tuning. Findings about transfer are limited to this assisted ROI/prompt protocol.
+
 ## DGX workflow
 
 1. Clone the repository.

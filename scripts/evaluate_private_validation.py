@@ -12,6 +12,7 @@ import sys
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.colors import ListedColormap
 import numpy as np
 import SimpleITK as sitk
 import torch
@@ -39,7 +40,65 @@ def scores(prediction, target, full_target_count, valid=None):
             "dice_full_target": 2 * intersection / (valid_predicted + full_target_count) if valid_predicted + full_target_count else 1.0,
             "recall_full_target": intersection / full_target_count if full_target_count else 1.0,
             "precision": intersection / valid_predicted if valid_predicted else (1.0 if not full_target_count else 0.0),
-            "predicted_voxels_crop": predicted, "predicted_voxels_valid": valid_predicted}
+            "predicted_voxels_crop": predicted, "predicted_voxels_valid": valid_predicted,
+            "true_positive_voxels": intersection, "false_positive_voxels": valid_predicted - intersection,
+            "false_negative_voxels_full_target": full_target_count - intersection,
+            "predicted_target_ratio": valid_predicted / full_target_count if full_target_count else None}
+
+
+def file_hash(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(8 * 1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def stage_checkpoints(run, sam_dir, initial_path, turbo_override=None, public_override=None):
+    turbo = (turbo_override or sam_dir / "ckpt/sam_med3d_turbo.pth").expanduser().resolve()
+    public_value = public_override or initial_path
+    if not public_value:
+        raise ValueError("Private checkpoint lacks its initialization path; provide --public-checkpoint")
+    public = Path(public_value).expanduser()
+    if not public.is_absolute():
+        public = sam_dir / public
+    public = public.resolve()
+    if not public_override and not public.parent.name.startswith("fsdp_nasalseg_ts_pseudolabel_"):
+        raise ValueError("Recorded initialization is not a public run; provide the actual --public-checkpoint")
+    selected = [("turbo_original", turbo), ("public_finetuned", public), ("private_finetuned", run / "sam_model_latest.pth")]
+    if len({path.resolve() for _, path in selected}) != 3 or any(not path.is_file() for _, path in selected):
+        raise ValueError("Stage comparison requires three distinct existing checkpoint files")
+    return selected
+
+
+def compare_paired_cases(rows, output):
+    baseline = {(row["case"], row["clicks"]): row for row in rows if row["checkpoint"] == "turbo_original"}
+    paired = []
+    for row in rows:
+        reference = baseline.get((row["case"], row["clicks"]))
+        if row["checkpoint"] != "turbo_original" and reference is not None:
+            paired.append({"checkpoint": row["checkpoint"], "case": row["case"], "clicks": row["clicks"],
+                           "dice_turbo": reference["dice_full_target"], "dice_stage": row["dice_full_target"],
+                           "dice_change_vs_turbo": row["dice_full_target"] - reference["dice_full_target"],
+                           "precision": row["precision"], "recall": row["recall_full_target"],
+                           "predicted_target_ratio": row["predicted_target_ratio"]})
+    write_csv(output / "paired_changes_vs_turbo.csv", paired)
+    return paired
+
+
+def comparison_plot(comparison, output):
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4))
+    for axis, metric in zip(axes, ("mean_dice_full_target", "mean_recall_full_target")):
+        for clicks in sorted({row["clicks"] for row in comparison}):
+            selected = [row for row in comparison if row["complete"] and row["clicks"] == clicks]
+            axis.plot([row["checkpoint"] for row in selected], [row[metric] for row in selected], marker="o", label=f"{clicks} click(s)")
+        axis.set(ylabel=metric, ylim=(0, 1), title="Validation; GT-assisted ROI/prompts")
+        axis.tick_params(axis="x", rotation=15)
+        axis.legend()
+        axis.grid(alpha=.2)
+    fig.tight_layout()
+    fig.savefig(output / "validation_comparison.png", dpi=160)
+    plt.close(fig)
 
 
 def preprocess(image_path, label_path):
@@ -134,6 +193,9 @@ def overlay(path, image, target, prediction, retention):
             ax = axes[row, column]
             ax.imshow(ct, cmap="gray", origin="lower", vmin=-1000, vmax=1000)
             for mask, color, active in [(gt, "cyan", column != 1), (pred, "magenta", column != 0)]:
+                if active and mask.any():
+                    ax.imshow(np.ma.masked_where(~mask, mask), cmap=ListedColormap([color]),
+                              origin="lower", vmin=0, vmax=1, alpha=.2, interpolation="nearest")
                 if active and mask.any() and not mask.all():
                     ax.contour(mask, levels=[0.5], colors=[color], linewidths=0.8)
             ax.set_title(f"native axis {axis}, slice {index}: " + ["GT (cyan)", "prediction (magenta)", "GT + prediction"][column], fontsize=8)
@@ -173,6 +235,9 @@ def main():
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--clicks", type=int, nargs="+", default=[1, 5])
     parser.add_argument("--seed", type=int, default=2026)
+    parser.add_argument("--compare-stages", action="store_true", help="Compare original turbo, actual public initialization, and private latest weights")
+    parser.add_argument("--turbo-checkpoint", type=Path)
+    parser.add_argument("--public-checkpoint", type=Path)
     args = parser.parse_args()
     if any(count < 1 for count in args.clicks):
         parser.error("Click counts must be positive")
@@ -216,6 +281,15 @@ def main():
     if latest.get("epoch", 0) < 50:
         parser.error("Latest private checkpoint has not completed the planned 50 epochs; select the completed run")
     history = training_history(latest, output)
+    initial_path = getattr(config, "checkpoint", None)
+    if args.compare_stages:
+        try:
+            checkpoints = stage_checkpoints(run, sam_dir, initial_path, args.turbo_checkpoint, args.public_checkpoint)
+        except ValueError as error:
+            parser.error(str(error))
+    else:
+        checkpoints = [(filename.removesuffix(".pth"), run / filename) for filename in
+                       ("sam_model_latest.pth", "sam_model_loss_best.pth", "sam_model_dice_best.pth")]
     del latest
     protocol = {"run": str(run), "split": "val", "validation_patients": len(val_ids),
                 "manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
@@ -226,20 +300,26 @@ def main():
                 "full_target_score": "crop prediction on valid original voxels, background elsewhere; denominator includes all GT voxels; padded voxels excluded",
                 "empty_pair_dice": 1.0, "test_images_read": False, "training": history,
                 "versions": {name: importlib.metadata.version(name) for name in ("torch", "torchio", "SimpleITK", "numpy")},
-                "evaluation_script_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
+                "evaluation_script_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+                "mode": "three_training_stages" if args.compare_stages else "private_checkpoint_comparison",
+                "recorded_private_initialization": str(initial_path) if initial_path else None,
+                "public_checkpoint_override": bool(args.public_checkpoint),
+                "checkpoint_sources": [{"name": name, "path": str(path), "sha256": file_hash(path)} for name, path in checkpoints]}
     save_json(output / "protocol.json", protocol)
     sys.path.insert(0, str(sam_dir))
     from segment_anything.build_sam3D import sam_model_registry3D
     model = sam_model_registry3D["vit_b_ori"](checkpoint=None).to(device).eval()
     metrics, failures, comparison = [], [], []
-    for filename in ("sam_model_latest.pth", "sam_model_loss_best.pth", "sam_model_dice_best.pth"):
-        checkpoint_path = run / filename
-        checkpoint_name = filename.removesuffix(".pth")
+    for checkpoint_name, checkpoint_path in checkpoints:
         destination = output / checkpoint_name
         destination.mkdir()
         checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
-        model.load_state_dict(checkpoint["model_state_dict"], strict=True)
-        epoch = checkpoint["epoch"]
+        weights = checkpoint.get("model_state_dict", checkpoint)
+        model.load_state_dict(weights, strict=True)
+        epoch = checkpoint.get("epoch", 0)
+        if checkpoint_name == "public_finetuned" and epoch < 50:
+            raise ValueError("Selected public checkpoint has not completed 50 epochs")
+        del weights
         del checkpoint
         checkpoint_rows = []
         for index, key in enumerate(val_ids, 1):
@@ -260,7 +340,7 @@ def main():
                     if clicks == max(args.clicks):
                         save_crop(destination / f"{alias}_prediction_crop.nii.gz", prediction.astype(np.uint8), metadata)
                         overlay(destination / f"{alias}_overlay.png", raw, gt, prediction, metadata["target_retention"])
-                if checkpoint_name == "sam_model_latest":
+                if checkpoint_name in ("sam_model_latest", "private_finetuned"):
                     save_crop(destination / f"{alias}_ct_crop.nii.gz", raw.astype(np.float32), metadata)
                     save_crop(destination / f"{alias}_target_crop.nii.gz", gt.astype(np.uint8), metadata)
                     save_json(destination / f"{alias}_preprocessing.json", metadata)
@@ -277,14 +357,29 @@ def main():
                                "cases_completed": len(selected), "complete": complete,
                                "mean_dice_full_target": float(np.mean([row["dice_full_target"] for row in selected])) if complete else None,
                                "mean_dice_crop": float(np.mean([row["dice_crop"] for row in selected])) if complete else None,
+                               "mean_dice_crop_legacy_threshold": float(np.mean([row["dice_crop_legacy_threshold"] for row in selected])) if complete else None,
+                               "median_dice_full_target": float(np.median([row["dice_full_target"] for row in selected])) if complete else None,
+                               "mean_precision": float(np.mean([row["precision"] for row in selected])) if complete else None,
+                               "mean_recall_full_target": float(np.mean([row["recall_full_target"] for row in selected])) if complete else None,
+                               "mean_predicted_target_ratio": float(np.mean([row["predicted_target_ratio"] for row in selected])) if complete else None,
+                               "zero_predictions": sum(row["predicted_voxels_valid"] == 0 for row in selected),
+                               "zero_overlap_cases": sum(row["true_positive_voxels"] == 0 for row in selected),
                                "mean_target_retention": float(np.mean([row["target_retention"] for row in selected])) if complete else None,
                                "empty_crops": sum(row["crop_target_voxels"] == 0 for row in selected)})
         write_csv(output / "checkpoint_comparison.csv", comparison)
+    paired = compare_paired_cases(metrics, output) if args.compare_stages else []
+    comparison_plot(comparison, output)
     eligible = [row for row in comparison if row["complete"] and row["clicks"] == max(args.clicks)]
     best = max(eligible, key=lambda row: row["mean_dice_full_target"]) if eligible and not failures else None
     summary = {"run": run.name, "protocol": "GT-assisted ROI and oracle prompts; validation only",
                "training": history, "comparison": comparison, "selected_by_validation": best,
-               "failures": len(failures), "artifacts": str(output)}
+               "failures": len(failures), "artifacts": str(output), "mode": protocol["mode"],
+               "paired_changes_vs_turbo": [
+                   {"checkpoint": name, "clicks": count,
+                    "mean_dice_change": float(np.mean([row["dice_change_vs_turbo"] for row in paired if row["checkpoint"] == name and row["clicks"] == count])),
+                    "cases": sum(row["checkpoint"] == name and row["clicks"] == count for row in paired)}
+                   for name in ("public_finetuned", "private_finetuned") for count in sorted(set(args.clicks))
+                   if not failures and any(row["checkpoint"] == name and row["clicks"] == count for row in paired)]}
     save_json(output / "summary.json", summary)
     print(json.dumps(summary, indent=2), flush=True)
     if failures:
