@@ -423,6 +423,36 @@ Agreement artifacts include:
 
 `PRIVATE_SOURCE_ROOT` overrides the default external source `~/raid/normal case_86`; `PRIVATE_DATA_DIR` overrides the prepared dataset root. `EXPERT_MAPPING_JSON` supplies an explicitly confirmed per-expert mapping; no tracked mapping is assumed. Direct use of `audit_expert_agreement.py` without a confirmation flag or mapping file is inventory-only and deliberately does not infer label semantics. The audit creates no consensus labels, does not change patient splits, and does not launch training. Read the agreement and representative annotations before choosing the next side-specific/limited-parameter experiment.
 
+## Two-patient side-specific memorization diagnostic
+
+This is a training-only learnability check before another full-cohort experiment. It selects exactly two patients from the frozen 54-patient training list using seed 2026, extracts original final RFSDP=1 and LFSDP=9 separately, and checks each source against its ColorTable, geometry, manifest side counts, and prepared bilateral target. It reads no other patients' image/mask content and leaves all source files, prepared data and patient splits unchanged. Both sides must be nonempty and fully retained in their native 128³ GT-centered crop; unsupported geometry or target truncation stops the run.
+
+```bash
+cd ~/raid/Clara/fsdp-train
+git pull origin main
+conda activate fsdp-med3d
+bash scripts/launch_private_tiny_nohup.sh
+tail -n 80 -F logs/tiny_training/latest.log
+```
+
+The launcher uses nohup, a separate tiny-training log/PID directory, a new timestamped run, and a separate report symlink. Default initialization is the original pretrained `SAM-Med3D/ckpt/sam_med3d_turbo.pth`; it does not replace a previous private checkpoint. The diagnostic uses all model parameters, constant AdamW LR 1e-4, zero weight decay, no augmentation, one optimizer step per side ROI, and five averaged interactive losses with detached mask feedback. Optimization and scoring both use eval mode; gradients remain enabled during optimization. Per-side prompt seeds and inference behavior are shared between training and scoring. CUDA AMP uses the existing inference policy and skipped updates are logged.
+
+The budget is at most 200 epochs (four attempted updates per epoch), with frozen-model evaluation after epoch 1 and every 5 epochs. Training stops when **every side and every combined bilateral patient** reaches Dice ≥0.90 at five oracle clicks per side. This threshold tests memorization, not generalization. A completed run with `memorization_check_passed: false` is a failed learnability check, not a runtime failure. The best diagnostic checkpoint is selected by the minimum of these held-in scores, reloaded and checked for score reproduction, and exported with before/after overlays and NIfTI prediction crops. No resume is provided; reruns create new isolated runs.
+
+```bash
+# During the run:
+cat outputs/private/tiny_training/latest/progress.json
+
+# After completion:
+cat outputs/private/tiny_training/latest/summary.json
+cat outputs/private/tiny_training/latest/best_training/sides.csv
+cat outputs/private/tiny_training/latest/best_training/patients.csv
+```
+
+The bilateral score restores both predictions into their original voxel grid, removes padding predictions, unions overlapping predictions once, and scores the entire final 1+9 target. Click budgets are **per side**: bilateral @1 consumes two clicks total and bilateral @5 consumes ten, plus GT-derived side ROIs. These scores are not directly comparable with the earlier single-ROI five-total-click validation protocol. High tiny-training Dice does not establish an improvement on the 10 validation patients or a claim of 80% FSDP performance; the 20 test patients remain unopened.
+
+Overrides: `GPU_ID` (default 0), `TINY_EPOCHS` (200), `TINY_EVAL_EVERY` (5), `TINY_LEARNING_RATE` (1e-4), `TINY_TARGET_DICE` (0.90), `SEED` (2026), `INITIAL_CHECKPOINT`, `SAM_MED3D_DIR`, `PRIVATE_SOURCE_ROOT`, and `PRIVATE_DATA_DIR`. Do not tune these on the test set. Artifacts and local patient provenance stay in ignored run/output/log directories. A script failure writes `failure.json` inside its new run directory; inspect that and the nohup log before retrying. The launcher does not stop or overwrite another training experiment.
+
 ## DGX workflow
 
 1. Clone the repository.
