@@ -386,6 +386,37 @@ The A/B audit uses the completed v2 run's validation-best checkpoint and the sam
 
 `position_encoding_contract` in `summary.json` tests the actual loaded encoder, not an assumed repository version. It compares sparse and dense features at non-diagonal embedding-cell centers, reporting errors and cosine similarities for both coordinate orders. `native_reproduces_saved_validation` must be true before attributing any performance changes to the coordinate setting. The summary compares Dice/precision/recall; `cases.csv` and `paired_changes.csv` retain per-patient results. Each mode has 10 distinctly named overlays and crop predictions in its own folder. A positional-feature mismatch alone is not sufficient evidence to declare the swap a model fix; use the validation A/B scores and images.
 
+## Measure the three experts' FSDP annotation agreement
+
+The user confirmed `labels_exp1`, `labels_exp2`, and `labels_exp3` are three experts' annotations, all with `1=RFSDP` and `9=LFSDP`. This confirmed mapping is stored in `configs/private_expert_labels.json`. `labelsTr` remains the designated final reference. Start the agreed annotation-consistency stage before creating a side-specific training dataset:
+
+```bash
+cd ~/raid/Clara/fsdp-train
+git pull origin main
+conda activate fsdp-med3d
+bash scripts/launch_expert_audit_nohup.sh
+tail -n 80 -F logs/expert_agreement/latest.log
+```
+
+After completion:
+
+```bash
+cat outputs/private/expert_agreement/latest/summary.json
+```
+
+The audit runs under nohup on CPU and reads image/mask content only for the **54 frozen training patients**. It lists candidate NIfTI filenames in the four source folders to match numeric patient prefixes, but never opens the validation/test scans or masks. It accepts `<id>.nii[.gz]` or a numeric ID followed by a `-`/`_` suffix; multiple candidates are reported as ambiguous. It verifies source CT headers, scalar 3D masks, per-patient final-reference ColorTables, integer label values, and image/mask physical geometry. It does not resample or edit masks. Missing/ambiguous files, invalid values, and geometry mismatches appear in `issues.json` and prevent a complete result. All-rater comparisons use the common set of patients with all four valid annotations; any partial cohort is explicitly marked incomplete.
+
+There are three inter-expert pairs plus three final-reference-versus-expert pairs, each scored separately for RFSDP, LFSDP, and bilateral union. Dice averages weight each nonempty patient pair equally. A pair with one empty target gets Dice 0; a pair with both targets empty is omitted from Dice averages and counted separately. Per-pair empty counts, compared-patient counts, median/range, physical target volumes, and centroid distances help expose missing annotations or spatial disagreement. Agreement is evidence about consistency, not a mathematical ceiling on achievable model Dice, and no annotator or consensus mask is automatically declared ground truth.
+
+Artifacts include:
+
+- `summary.json`: label values, completion status, and pair/target aggregate metrics; no case IDs are printed in the console.
+- `pairwise_summary.csv` and `case_agreement.csv`: aggregate and per-case pairwise scores/volumes/distances.
+- `agreement_heatmap.png`: the three target-specific agreement matrices, with nonempty case counts (only generated for complete audits).
+- `inventory.csv`, `issues.json`, and `protocol.json`: pairing/geometry issues, actual label mapping, mapping/script/manifest checksums, and local provenance. Patient IDs remain local in the ignored protocol file; case CSVs use `train_XX` aliases in sorted training-ID order.
+
+`PRIVATE_SOURCE_ROOT` overrides the default external source `~/raid/normal case_86`; `PRIVATE_DATA_DIR` overrides the prepared dataset root. `EXPERT_MAPPING_JSON` supplies a different confirmed per-expert mapping. Direct use of `audit_expert_agreement.py` without a confirmation flag or mapping file is inventory-only and deliberately does not infer label semantics. The audit creates no consensus labels, does not change patient splits, and does not launch training. Read the agreement and representative annotations before choosing the next side-specific/limited-parameter experiment.
+
 ## DGX workflow
 
 1. Clone the repository.
