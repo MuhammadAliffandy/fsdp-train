@@ -199,6 +199,42 @@ TASK_NAME=fsdp_private_binary_<timestamp> RESUME=1 \
 
 Do not use `RESUME=latest` for private recovery: that shortcut deliberately searches public run names. Resume restores the saved optimizer learning rate; a new private experiment instead uses the private launcher.
 
+## Diagnose the completed private run on validation
+
+The private training screenshot reached epoch 49/49 with final training loss `7.16802140518471` and Dice `0.2425045617338684`. Prepare diagnostics before changing training settings. This stage reads **only the 10 frozen validation patients** and compares the private run's `latest`, training-`loss_best`, and training-`dice_best` checkpoints. It exports their stored training history, runs deterministic oracle-prompt evaluation at 1 and 5 clicks, and creates overlays and crop NIfTI files. It does not train a model.
+
+```bash
+cd ~/raid/Clara/fsdp-train
+git pull origin main
+conda activate fsdp-med3d
+bash scripts/launch_validation_nohup.sh
+tail -n 80 -F logs/validation/latest.log
+```
+
+The launcher uses nohup, saves a timestamped log/PID under `logs/validation/`, and prints the output directory under `outputs/private/diagnostics/`. Default selection is the newest private run with a latest checkpoint; the evaluator checks that checkpoint's training path and requires 50 completed epochs. To choose a run or physical GPU explicitly:
+
+```bash
+PRIVATE_RUN_DIR="$HOME/raid/Clara/SAM-Med3D/work_dir/<private_run_name>" \
+  GPU_ID=0 bash scripts/launch_validation_nohup.sh
+```
+
+After completion, read `outputs/private/diagnostics/latest/summary.json` to get the latest validation summary. `latest` points to the output directory corresponding to `logs/validation/latest.log`.
+
+Artifacts in the printed diagnostics directory:
+
+- `summary.json`: training extrema, validation comparison, and best of the three candidates by mean full-target Dice at 5 clicks. Any failed case prevents selection.
+- `training_history.csv` and `training_curves.png`: stored loss and Dice for every training epoch; their extrema are training extrema, not validation results.
+- `validation_cases.csv` and `checkpoint_comparison.csv`: per-case and aggregate validation metrics at 1/5 clicks, plus crop retention.
+- `protocol.json`: checkpoint run, frozen manifest checksum, preprocessing, prompt and threshold definitions, seed, and dependency versions.
+- `failures.json`: per-case errors, if any. A partial validation result is not used to select a checkpoint.
+- Each checkpoint subfolder contains 10 `val_XX_overlay.png` files and 5-click crop predictions. The latest-checkpoint folder also contains CT/target crops and preprocessing metadata. Aliases follow the sorted validation IDs in the frozen manifest; artifacts and detailed IDs stay local in ignored directories.
+
+The diagnostic matches the upstream loader's clamp and native-voxel, GT-centered 128-cube preprocessing (including its discarded affine before cropping), and applies training normalization `ZNormalization(x > 0)`. Physical geometry is restored when saving crops. `target_retention` measures the fraction of full-volume GT inside the crop. `dice_crop` scores the crop, while `dice_full_target` includes all GT voxels and treats voxels outside the crop as predicted background; padded voxels outside the original CT are excluded from this latter score. Both-empty crop pairs score 1 and their count is reported separately.
+
+Prompt clicks are generated from GT/prediction disagreement; the latest click plus previous mask is supplied to the decoder. No random flips or prompt dropout are applied. This is a **GT-assisted ROI and interactive-prompt diagnostic**, not a measurement of automatic full-scan FSDP detection. The main metric uses `logit > 0` (equivalent to probability >0.5). The CSV also reports crop Dice with the trainer's original `logit > 0.5` threshold for context. Existing training logs/checkpoints are unchanged, and their Dice is not directly equivalent to this evaluation protocol.
+
+After the log reports completion, share `summary.json` and selected overlays to decide whether cropping, normalization, prompting, or training settings need revision. Keep the 20 test patients untouched during these decisions.
+
 ## DGX workflow
 
 1. Clone the repository.
