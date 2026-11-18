@@ -38,7 +38,8 @@ fi
 LOG_FILE="$LOG_DIR/$RUN_NAME.$(date -u +%Y%m%dT%H%M%SZ)_$$.log"
 COMMAND=(bash "$PROJECT_DIR/scripts/run_private_long_worker.sh" "$DATA_DIR" "$DIAGNOSTICS" "$PREFLIGHT"
   --sam-dir "$SAM_MED3D_DIR" --data-dir "$DATA_DIR" --checkpoint "$CHECKPOINT" --run-dir "$RUN_DIR"
-  --epochs "${NUM_EPOCHS:-800}" --val-every "${VAL_EVERY:-10}" --accumulation "${ACCUMULATION_STEPS:-8}"
+  --epochs "${NUM_EPOCHS:-200}" --val-every "${VAL_EVERY:-10}" --accumulation "${ACCUMULATION_STEPS:-8}"
+  --patience-epochs "${PATIENCE_EPOCHS:-50}" --min-delta "${MIN_DELTA:-0.001}"
   --clicks "${TRAIN_CLICKS:-5}" --lr "${LEARNING_RATE:-2e-5}" --seed "${SEED:-2026}" --device cuda:0)
 if [[ "${RESUME:-0}" == "1" ]]; then COMMAND+=(--resume); fi
 export CUDA_VISIBLE_DEVICES="${GPU_ID:-0}"

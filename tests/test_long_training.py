@@ -61,5 +61,27 @@ class AccumulationTests(unittest.TestCase):
         self.assertEqual([trainer.accumulation_window(i, 3, 1) for i in range(3)], [(1, True)] * 3)
 
 
+class EarlyStoppingTests(unittest.TestCase):
+    def test_patience_counts_epochs_instead_of_validation_calls(self):
+        state = {'anchor': .1, 'last_improvement_epoch': 0}
+        for epoch in (1, 10, 20, 30, 40):
+            state, stop = trainer.early_stop_update(state, .1005, epoch, 50, .001)
+            self.assertFalse(stop)
+        state, stop = trainer.early_stop_update(state, .1005, 50, 50, .001)
+        self.assertTrue(stop)
+
+    def test_significant_gain_resets_patience_and_zero_disables_stopping(self):
+        state = {'anchor': .1, 'last_improvement_epoch': 0}
+        state, stop = trainer.early_stop_update(state, .102, 40, 50, .001)
+        self.assertFalse(stop)
+        self.assertEqual(state['last_improvement_epoch'], 40)
+        _, stop = trainer.early_stop_update(state, .102, 80, 50, .001)
+        self.assertFalse(stop)
+        _, stop = trainer.early_stop_update(state, .102, 90, 50, .001)
+        self.assertTrue(stop)
+        _, stop = trainer.early_stop_update(state, .102, 800, 0, .001)
+        self.assertFalse(stop)
+
+
 if __name__ == '__main__':
     unittest.main()

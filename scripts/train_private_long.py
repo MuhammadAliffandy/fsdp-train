@@ -51,6 +51,14 @@ def accumulation_window(step, batches, accumulation):
     return size, (step + 1) % accumulation == 0 or step + 1 == batches
 
 
+def early_stop_update(state, score, epoch, patience, minimum_delta):
+    updated = dict(state)
+    if score > updated['anchor'] + minimum_delta:
+        updated.update(anchor=score, last_improvement_epoch=epoch)
+    stop = patience > 0 and epoch - updated['last_improvement_epoch'] >= patience
+    return updated, stop
+
+
 def interactive_loss(model, image, target, criterion, clicks, seed):
     generator = np.random.default_rng(seed)
     embedding = model.image_encoder(image)
@@ -140,7 +148,7 @@ def main():
     parser.add_argument("--data-dir", type=Path, required=True)
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--run-dir", type=Path, required=True)
-    parser.add_argument("--epochs", type=int, default=800)
+    parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--val-every", type=int, default=10)
     parser.add_argument("--accumulation", type=int, default=8)
     parser.add_argument("--clicks", type=int, default=5)
@@ -148,9 +156,13 @@ def main():
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--patience-epochs", type=int, default=50)
+    parser.add_argument("--min-delta", type=float, default=.001)
     args = parser.parse_args()
     if min(args.epochs, args.val_every, args.accumulation, args.clicks) < 1 or args.lr <= 0:
         parser.error("Training counts and LR must be positive")
+    if args.patience_epochs < 0 or args.min_delta < 0:
+        parser.error("Patience and minimum validation improvement must be nonnegative")
     device = torch.device(args.device)
     if device.type == "cuda" and not torch.cuda.is_available():
         parser.error("CUDA unavailable")
@@ -202,11 +214,13 @@ def main():
     source = torch.load(run / "sam_model_latest.pth" if args.resume else args.checkpoint, map_location="cpu", weights_only=False)
     model.load_state_dict(source.get("model_state_dict", source), strict=True)
     history, start, best = [], 0, -1.
+    early_stop = {'anchor': -1., 'last_improvement_epoch': 0}
     if args.resume:
         optimizer.load_state_dict(source["optimizer_state_dict"])
         scheduler.load_state_dict(source["lr_scheduler_state_dict"])
         scaler.load_state_dict(source["scaler_state_dict"])
         history, start, best = source["history"], source["epoch"], source["best_validation_dice"]
+        early_stop = source['early_stop_state']
         torch.set_rng_state(source["torch_rng_state"])
         np.random.set_state(source["numpy_rng_state"])
         random.setstate(source["python_rng_state"])
@@ -219,18 +233,21 @@ def main():
         return {"epoch": epoch, "model_state_dict": model.state_dict(), "optimizer_state_dict": optimizer.state_dict(),
                 "lr_scheduler_state_dict": scheduler.state_dict(), "scaler_state_dict": scaler.state_dict(),
                 "history": history, "best_validation_dice": best, "args": args,
+                "early_stop_state": early_stop,
                 "used_datas": [str(data / "train/ct_private")], "config": config,
                 "torch_rng_state": torch.get_rng_state(), "numpy_rng_state": np.random.get_state(),
                 "python_rng_state": random.getstate(), "cuda_rng_state": torch.cuda.get_rng_state_all() if device.type == "cuda" else []}
     if not args.resume:
         means, rows = validate(model, validation, device, args.seed)
         best = means['5']
+        early_stop = {'anchor': best, 'last_improvement_epoch': 0}
         write_csv(run / 'validation_initial.csv', rows)
         write_csv(run / 'validation_best.csv', rows)
         atomic_save(run / 'sam_model_val_best.pth', state(0))
         atomic_save(run / 'sam_model_latest.pth', state(0))
         print(f"Initial validation Dice: {means}", flush=True)
-    for epoch in range(start, args.epochs):
+    stopped_early = args.resume and args.patience_epochs > 0 and start - early_stop['last_improvement_epoch'] >= args.patience_epochs
+    for epoch in range(start, args.epochs) if not stopped_early else []:
         lr = optimizer.param_groups[0]['lr']
         metrics = train_epoch(model, training, optimizer, scaler, criterion, device, epoch, args.seed, args.accumulation, args.clicks)
         scheduler.step()
@@ -241,28 +258,35 @@ def main():
             row.update(val_dice_1_click=means['1'], val_dice_5_clicks=means['5'])
             write_csv(run / 'validation_latest.csv', rows)
             improved = means['5'] > best
+            early_stop, stopped_early = early_stop_update(early_stop, means['5'], epoch + 1, args.patience_epochs, args.min_delta)
             if improved:
                 best = means['5']
                 write_csv(run / 'validation_best.csv', rows)
         history.append(row)
         write_csv(run / 'history.csv', history)
         (run / 'progress.json').write_text(json.dumps({"epoch": epoch + 1, "planned_epochs": args.epochs,
-                                                      "best_validation_dice_5_clicks": best, "latest": row}, indent=2))
+                                                      "best_validation_dice_5_clicks": best, "latest": row,
+                                                      "early_stop_state": early_stop, "stopped_early": stopped_early}, indent=2))
         if improved:
             atomic_save(run / 'sam_model_val_best.pth', state(epoch + 1))
-        if improved or (epoch + 1) % args.val_every == 0 or epoch + 1 == args.epochs:
+        if improved or stopped_early or (epoch + 1) % args.val_every == 0 or epoch + 1 == args.epochs:
             atomic_save(run / 'sam_model_latest.pth', state(epoch + 1))
         print(json.dumps({"epoch_result": row, "best_validation_dice_5_clicks": best}), flush=True)
+        if stopped_early:
+            print(f"Early stopping at epoch {epoch + 1}: no validation gain >{args.min_delta} for {args.patience_epochs} epochs", flush=True)
+            break
     selected = torch.load(run / 'sam_model_val_best.pth', map_location='cpu', weights_only=False)
     model.load_state_dict(selected['model_state_dict'], strict=True)
     best_epoch = selected['epoch']
     del selected
     means, rows = validate(model, validation, device, args.seed, export=run / 'best_validation')
     write_csv(run / 'best_validation/cases.csv', rows)
-    (run / 'summary.json').write_text(json.dumps({'completed_epochs': args.epochs, 'best_epoch': best_epoch,
+    completed = history[-1]['epoch'] if history else start
+    (run / 'summary.json').write_text(json.dumps({'completed_epochs': completed, 'planned_epochs': args.epochs,
+                                                 'stopped_early': stopped_early, 'best_epoch': best_epoch,
                                                  'best_validation_dice': means, 'test_images_read': False,
                                                  'protocol': 'GT-assisted ROI and oracle clicks'}, indent=2))
-    print(f"Training complete: {args.epochs} epochs. Best validation Dice@5={best:.6f}. Run: {run}", flush=True)
+    print(f"Training complete: {completed}/{args.epochs} epochs. Best validation Dice@5={best:.6f}. Run: {run}", flush=True)
 
 
 if __name__ == "__main__":

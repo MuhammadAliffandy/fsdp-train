@@ -261,9 +261,25 @@ Each stage evaluates all 10 validation cases at 1 and 5 clicks, with the same ca
 
 The highest 5-click validation score among these three candidates is reported using the existing `selected_by_validation` field; this is a comparison at a fixed click budget, not a search across all possible checkpoints or settings. Inspect stage scores, paired changes, and overlays before deciding whether to change initialization, preprocessing, or fine-tuning. Findings about transfer are limited to this assisted ROI/prompt protocol.
 
-## Verify the pipeline, then run the 800-epoch private experiment
+## Verify the pipeline, then run up to 200 private epochs
 
-The [SAM-Med3D paper, section 4.2](https://arxiv.org/html/2310.15161v3#S4.SS2), reports 800 epochs for its first pretraining stage using 131K masks. This is evidence for that large-scale pretraining schedule, not a guarantee that private FSDP fine-tuning needs 800 epochs or will reach Dice 0.8. Here 800 is an explicit experimental budget, with checkpoint selection on the 10 validation patients.
+The [SAM-Med3D paper, section 4.2](https://arxiv.org/html/2310.15161v3#S4.SS2), reports 800 epochs for its first pretraining stage using 131K masks. This is evidence for that large-scale pretraining schedule, not a guarantee that private FSDP fine-tuning needs 800 epochs or will reach Dice 0.8. The [official training script](https://github.com/uni-medical/SAM-Med3D/blob/main/train.py) defaults to 200 epochs. For this 54-patient training set, the revised initial budget is **up to 200 epochs**, chosen as an engineering starting point rather than a paper-derived optimum. With batch size 1 and accumulation 8, 54 batches give 7 update attempts per epoch: 700 at 100 epochs, 1,400 at 200, and 5,600 at 800. AMP can skip individual updates. Data size alone cannot determine the optimal epoch count.
+
+Early stopping checks validation at the configured intervals. Default patience is 50 epochs without a cumulative Dice improvement exceeding 0.001 (0.1 percentage point) relative to the patience anchor; default validation interval is 10 epochs. The best checkpoint still tracks every positive validation improvement, independently of the patience threshold. Thus the run can end before 200 epochs and exports the selected checkpoint, not simply the final weights.
+
+The user confirmed that an older 800-epoch run is active on DGX and explicitly requested stopping it and starting a new 200-epoch run. New defaults and early stopping do not change that running process. On DGX use:
+
+```bash
+cd ~/raid/Clara/fsdp-train
+git pull origin main
+conda activate fsdp-med3d
+bash scripts/restart_private_200.sh
+tail -n 80 -F logs/training/latest.log
+```
+
+The replacement script identifies exactly one active 800-epoch trainer from this project's PID files, saved configuration, Linux `/proc` command line, and run path. It rechecks process start time to reject a reused PID, sends SIGTERM, waits up to 30 seconds for exit, and then launches a fresh 200-epoch run under nohup. If identification or stopping fails, no new run is launched. If several 800-epoch runs exist, specify `LONG_RUN_NAME=<exact_run_name>`; other ambiguity is not guessed. A process still in the preflight phase is not killed as though it were the trainer. The stop is recorded under `outputs/private/stops/`. Existing checkpoints/logs are not removed; work since the last saved checkpoint may be lost. GPU/process stopping is executed by this command on DGX, not remotely from the local workspace.
+
+The new run uses a fresh name, default original-turbo initialization, and a 200-epoch schedule with patience 50. It does not resume the old optimizer/schedule. Changing the epoch budget on resume would violate the old frozen configuration; do not edit a saved configuration to bypass that check. Older checkpoints must be recovered with their recorded code/config, since they predate the new early-stop state.
 
 Code inspection of the [upstream training loop](https://github.com/uni-medical/SAM-Med3D/blob/main/train.py) found an accumulation defect: it steps at zero-based batches 8,16,...,48 with 54 batches and accumulation=8. The first window contains 9 samples and the final 5 samples' accumulated gradients are discarded at the next epoch's zero_grad. The corrected loop uses 8-sample windows plus a final 6-sample window: 7 updates per epoch rather than 6 when AMP does not skip updates. This is a real implementation issue; its contribution to low Dice has not yet been isolated.
 
@@ -288,7 +304,7 @@ The 20 test image/label files are not read. A failed numerical consistency check
 When preflight passes, the worker starts `train_private_long.py` in a new ignored `runs/fsdp_private_v2_<timestamp>_<pid>/` directory. Defaults:
 
 - original turbo initialization (direct turbo-to-private), all modules trainable;
-- 800 epochs, batch size 1, accumulation 8, gradient norm clip 1;
+- maximum 200 epochs, patience 50 epochs, minimum significant validation gain 0.001; batch size 1, accumulation 8, gradient norm clip 1;
 - AdamW, LR `2e-5` for all parameters, weight decay 0.1; five-epoch warmup and cosine decay to 5% of base LR;
 - training-matched native GT-centered 128-cube crop and `ZNormalization(x>0)`, random flips on three voxel axes;
 - 5 oracle point interactions with the latest point and detached previous mask; per-click DiceCE losses are averaged, with no random prompt dropout;
@@ -315,7 +331,7 @@ LONG_RUN_NAME=fsdp_private_v2_<timestamp>_<pid> RESUME=1 \
   bash scripts/launch_private_long_nohup.sh
 ```
 
-Optional launch overrides include `NUM_EPOCHS`, `VAL_EVERY`, `LEARNING_RATE`, `ACCUMULATION_STEPS`, `TRAIN_CLICKS`, `SEED`, `GPU_ID`, `INITIAL_CHECKPOINT`, `PRIVATE_DATA_DIR`, and `DIAGNOSTICS_DIR`. The last should point to a completed diagnostic folder with saved private CT/target/prediction crops. Resume requires the same values as the original run. For a standalone preflight before allocating a long GPU run:
+Optional launch overrides include `NUM_EPOCHS`, `VAL_EVERY`, `PATIENCE_EPOCHS`, `MIN_DELTA`, `LEARNING_RATE`, `ACCUMULATION_STEPS`, `TRAIN_CLICKS`, `SEED`, `GPU_ID`, `INITIAL_CHECKPOINT`, `PRIVATE_DATA_DIR`, and `DIAGNOSTICS_DIR`. Set `PATIENCE_EPOCHS=0` only to disable early stopping intentionally. `DIAGNOSTICS_DIR` should point to a completed diagnostic folder with saved private CT/target/prediction crops. Resume requires the same values as the original run. For a standalone preflight before allocating a long GPU run:
 
 ```bash
 python -u scripts/verify_private_pipeline.py \
