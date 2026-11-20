@@ -481,6 +481,44 @@ The primary comparison is **mean original-grid bilateral patient Dice** at a fix
 
 The actual first side-protocol comparison completed on all 10 validation patients: bilateral patient Dice @5 per side was **5.99% Turbo / 10.17% v2 best / 1.17% tiny best**. Tiny's held-in training result was 79.27%, a 78.10-point gap. Its mean validation recall was 0.71%; the high two-patient training score did not generalize. All side targets were fully retained, but this does not establish that all preprocessing or anatomical assumptions are correct. The old 12.70% v2 validation score used a different crop/click protocol and is not directly comparable. The next proposed experiment is side-specific training on all 54 training patients with selection on the fixed 10 validation patients, starting from original Turbo; no such new full-cohort run has been launched yet.
 
+## Train all 54 patients with side-specific targets (v3)
+
+This is the first full-cohort side-specific training experiment: **54 training patients / 108 side ROIs**, **10 validation patients / 20 side ROIs**, with the existing 20 test patients reserved. Initialization must be the same original Turbo checkpoint used by the completed side-validation comparison. The small two-patient checkpoint is not used. The maximum budget is 200 epochs, validation every 5 epochs, and early stopping after 50 epochs without improvement greater than 0.001 Dice. These are initial experiment settings, not a guarantee of 80% validation Dice.
+
+```bash
+cd ~/raid/Clara/fsdp-train
+git pull origin main
+conda activate fsdp-med3d
+GPU_ID=0 bash scripts/launch_private_sides_nohup.sh
+tail -n 80 -F logs/side_training/latest.log
+```
+
+The nohup process includes preparation, source checks, initial validation and training. Source scans/final labels, prepared binary targets, ColorTables, physical geometry, side counts and full-target crop retention are checked on all 64 train/validation patients; no test scans are opened and no source/prepared files are edited. Derivatives and local patient provenance are written only to a new run. The original Turbo must reproduce **every saved side and bilateral validation Dice** at one/five clicks per side within 1e-4 before the first optimizer step. A mismatch stops training and must be investigated. Preparation may take time before epoch logs appear.
+
+Defaults preserve the v2 optimizer recipe while changing the training targets to individual sides: all parameters, AdamW LR 2e-5, weight decay 0.1, five averaged interactive losses with detached feedback, independent XYZ flips, shuffled side ROIs and epoch-varying oracle prompts. Accumulation is 8 ROIs, including the final 4-ROI window: **14 attempted optimizer updates per epoch**. This doubles ROI/update exposure relative to the earlier 54-batch v2 run; it is not an isolated single-variable ablation. CUDA AMP successes/skips are logged. Five-epoch warmup and cosine LR decay are used.
+
+```bash
+# During training:
+cat outputs/private/side_training/latest/progress.json
+
+# Once the complete pipeline finishes:
+cat outputs/private/side_training/latest/summary.json
+```
+
+The primary selection metric is mean **validation full-target bilateral patient Dice at five clicks per side**. The original Turbo at epoch 0 remains eligible if training never improves validation. Side scores and the worst patient score are also recorded. Checkpoints are `sam_model_side_val_best.pth` and `sam_model_side_latest.pth`. Latest is saved at validation intervals, on improvements, and at stopping/completion; a crash may require recomputing up to four epochs. At the end, the selected checkpoint is reloaded, its validation score must reproduce, and its full training cohort is scored in the same frozen inference mode without augmentation. This provides a train/validation gap that does not confuse moving augmented training statistics with frozen validation. Representative validation overlays, NIfTI predictions and per-case CSVs are exported. The summary also reports the Dice change against v2 under the saved side-validation protocol when that comparison is available.
+
+The protocol remains GT-assisted: native 128³ side-centered ROIs, native prompt order, and one/five oracle clicks **per side** (two/ten bilateral total). No automatic clinical-performance claim or direct comparison with the earlier single-ROI/five-total-click result is justified. Keep test reserved for the final selected protocol.
+
+Defaults can be overridden with `GPU_ID`, `NUM_EPOCHS`, `VAL_EVERY`, `ACCUMULATION_STEPS`, `LEARNING_RATE`, `PATIENCE_EPOCHS`, `MIN_DELTA`, `SEED`, `SAM_MED3D_DIR`, `PRIVATE_SOURCE_ROOT`, `PRIVATE_DATA_DIR`, `TURBO_CHECKPOINT` and `SIDE_BASELINE_DIR`. The baseline defaults to the completed `outputs/private/side_validation/latest` comparison. Logs/PIDs use `logs/side_training`; prior run files and older training logs are preserved.
+
+To resume after a process failure, use the run name printed by the launcher:
+
+```bash
+RESUME=1 SIDE_RUN_NAME=fsdp_private_side_v3_YOUR_RUN_NAME GPU_ID=0 bash scripts/launch_private_sides_nohup.sh
+```
+
+Resume restores optimizer, scheduler, scaler, history, early-stopping state and CPU/CUDA/Python/NumPy RNG states. Code (including SAM model source), data hashes, initialization, baseline and settings must match the frozen run. Retain the original overrides and set `SIDE_BASELINE_DIR` to its original resolved comparison directory if the `latest` link has since changed. Changed epoch budgets/schedules require a new run; configuration changes are not silently applied during resume. Failed runs write `failure.json`; inspect that and the log before retrying. No existing process is killed by this launcher.
+
 ## DGX workflow
 
 1. Clone the repository.

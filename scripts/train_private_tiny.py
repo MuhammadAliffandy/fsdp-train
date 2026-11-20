@@ -54,12 +54,14 @@ def sparse_scores(predicted, target):
             'true_positive_voxels': intersection}
 
 
-def prepare_samples(source_root, data, manifest, run, seed, split='train'):
+def prepare_samples(source_root, data, manifest, run, seed, split='train', all_training_patients=False):
     source_root, data = source_root.expanduser().resolve(), data.resolve()
     training_ids = select_patients(manifest, seed)
     if split not in ('train', 'val'):
         raise ValueError('Only training diagnostic or frozen validation data are supported')
-    ids = training_ids if split == 'train' else sorted(manifest['splits']['val'])
+    if all_training_patients and split != 'train':
+        raise ValueError('Full training selection is only supported for the training split')
+    ids = (sorted(manifest['splits']['train']) if all_training_patients else training_ids) if split == 'train' else sorted(manifest['splits']['val'])
     records = {row['patient_id']: row for row in manifest['cases']}
     inputs = run / 'inputs'
     inputs.mkdir()
