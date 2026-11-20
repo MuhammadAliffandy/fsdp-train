@@ -24,11 +24,11 @@ def policy_samples(edge=64):
 class ROIZoomTests(unittest.TestCase):
     def test_policy_uses_per_axis_bounds_and_selects_smallest_train_only_crop(self):
         result = roi_zoom.choose_policy(policy_samples())
-        self.assertEqual(result['selected_native_size'], 64)
-        self.assertTrue(all(candidate['fully_retained_sides'] == 108 for candidate in result['candidates']))
+        self.assertEqual(result['selected_native_size_xyz'], [10, 10, 10])
+        self.assertTrue(all(candidate['fully_retained_sides'] == 108 for candidate in result['cubic_diagnostics']))
         moved = policy_samples(edge=20)
         result = roi_zoom.choose_policy(moved)
-        self.assertEqual(result['selected_native_size'], 96)
+        self.assertEqual(result['selected_native_size_xyz'], [96, 10, 10])
 
     def test_policy_rejects_validation_and_invalid_side_coverage(self):
         samples = policy_samples()
@@ -51,16 +51,16 @@ class ROIZoomTests(unittest.TestCase):
                   'prompt_seed': 7, 'metadata': {'full_target_voxels': 8, 'crop_target_voxels': 8,
                     'target_retention': 1., 'crop_origin_mm': [10., 20., 30.], 'spacing_mm': [1., 2., 3.],
                     'direction': [0., -1., 0., 1., 0., 0., 0., 0., 1.], 'crop_offset_xyz': [10, 20, 30]}}
-        zoomed = roi_zoom.zoom_samples([sample], 64)[0]
+        zoomed = roi_zoom.zoom_samples([sample], (64, 80, 96))[0]
         self.assertEqual(tuple(zoomed['image'].shape), (1, 1, 128, 128, 128))
         self.assertEqual(tuple(zoomed['target'].shape), (1, 1, 128, 128, 128))
         self.assertEqual(zoomed['metadata']['target_retention'], 1.)
-        self.assertEqual(zoomed['metadata']['crop_offset_xyz'], [42, 52, 62])
-        self.assertEqual(zoomed['metadata']['crop_origin_mm'], [-54., 52., 126.])
+        self.assertEqual(zoomed['metadata']['crop_offset_xyz'], [42, 44, 46])
+        self.assertEqual(zoomed['metadata']['crop_origin_mm'], [-38., 52., 78.])
         self.assertEqual(zoomed['native_target'].sum(), 8)
-        self.assertEqual(zoomed['valid'].shape, (64, 64, 64))
-        prediction = np.zeros((64, 64, 64), dtype=bool)
-        prediction[18, 28, 38] = True
+        self.assertEqual(zoomed['valid'].shape, (64, 80, 96))
+        prediction = np.zeros((64, 80, 96), dtype=bool)
+        prediction[18, 36, 54] = True
         indices = native_prediction_indices(prediction, zoomed['valid'], zoomed['metadata'], (200, 200, 200))
         expected = np.ravel_multi_index(([60], [80], [100]), (200, 200, 200))
         np.testing.assert_array_equal(indices, expected)

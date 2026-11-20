@@ -12,20 +12,20 @@ from evaluate_private_validation import file_hash, infer_clicks, save_crop, scor
 from train_private_tiny import evaluate as evaluate_native, native_prediction_indices, sparse_scores
 
 
-def choose_policy(samples, candidates=(64, 96), margin=4):
+def choose_policy(samples, cubic_candidates=(64, 96), margin=4):
     if any(not sample['case'].startswith('train_') for sample in samples):
         raise ValueError('ROI size selection accepts training patients only')
     if len(samples) != 108 or len({sample['case'] for sample in samples}) != 54:
         raise ValueError('ROI policy requires all 54 training patients and 108 side ROIs')
-    if margin < 0 or not candidates or tuple(sorted(set(candidates))) != tuple(candidates):
-        raise ValueError('ROI candidates must be unique and ascending, with a nonnegative margin')
+    if margin < 0 or not cubic_candidates or tuple(sorted(set(cubic_candidates))) != tuple(cubic_candidates):
+        raise ValueError('Cubic diagnostic candidates must be unique and ascending, with a nonnegative margin')
     if any([sample['side'] for sample in samples if sample['case'] == alias].count(side) != 1
            for alias in {sample['case'] for sample in samples} for side in ('RFSDP', 'LFSDP')):
         raise ValueError('Both training sides are required')
-    report, selected = [], None
-    for size in candidates:
+    cubic_report = []
+    for size in cubic_candidates:
         if size <= 0 or size >= 128 or (128 - size) % 2:
-            raise ValueError('Native ROI candidates must be smaller centered even cubes')
+            raise ValueError('Cubic diagnostic sizes must be smaller centered even cubes')
         start = (128 - size) // 2
         retention, borders = [], []
         for sample in samples:
@@ -38,21 +38,39 @@ def choose_policy(samples, candidates=(64, 96), margin=4):
             low, high = points.min(dim=0).values, points.max(dim=0).values
             borders.append(int(torch.minimum(low - start, start + size - 1 - high).min()))
         eligible = all(value == 1. for value in retention) and min(borders) >= margin
-        report.append({'native_size': size, 'minimum_training_target_retention': min(retention),
+        cubic_report.append({'native_size_xyz': [size, size, size], 'minimum_training_target_retention': min(retention),
                        'mean_training_target_retention': float(np.mean(retention)),
                        'fully_retained_sides': sum(value == 1. for value in retention),
                        'minimum_target_border_voxels': min(borders), 'eligible': eligible})
-        if selected is None and eligible:
-            selected = size
-    return {'selected_native_size': selected, 'model_size': 128, 'margin_voxels': margin,
-            'training_patients': 54, 'training_sides': 108, 'candidates': report,
-            'selection': 'Smallest fixed centered crop retaining every training target with the specified margin; no validation targets used'}
+    axes = {}
+    native_xyz = []
+    for axis, name in enumerate(('X', 'Y', 'Z')):
+        required = []
+        for sample in samples:
+            points = torch.nonzero(sample['target'][0, 0], as_tuple=False)
+            low, high = int(points[:, axis].min()), int(points[:, axis].max())
+            eligible_sizes = [size for size in range(2, 129, 2)
+                              if (128 - size) // 2 + margin <= low
+                              and high <= (128 - size) // 2 + size - 1 - margin]
+            required.append(min(eligible_sizes) if eligible_sizes else None)
+        valid = [size for size in required if size is not None]
+        selected = max(valid) if len(valid) == len(samples) else None
+        axes[name] = {'selected_native_size': selected, 'sides_with_valid_size': len(valid),
+                      'required_size_min_median_max': [min(valid), float(np.median(valid)), max(valid)] if valid else None}
+        native_xyz.append(selected)
+    selected_box = native_xyz if all(size is not None for size in native_xyz) else None
+    return {'selected_native_size_xyz': selected_box, 'model_size_xyz': [128, 128, 128],
+            'axis_selection': axes, 'margin_voxels': margin, 'training_patients': 54, 'training_sides': 108,
+            'cubic_diagnostics': cubic_report,
+            'selection': 'Smallest centered crop independently per XYZ axis retaining every training target with the specified margin; no validation targets used'}
 
 
-def resize_labels(target, size=128):
+def resize_labels(target, size_xyz=(128, 128, 128)):
     # Pixel centers match trilinear image resizing with align_corners=False.
     result = target
-    for axis, length in enumerate(target.shape[-3:], 2):
+    if len(size_xyz) != 3 or any(size <= 0 for size in size_xyz):
+        raise ValueError('Model target size must contain three positive dimensions')
+    for axis, (length, size) in enumerate(zip(target.shape[-3:], size_xyz), 2):
         index = torch.floor((torch.arange(size, device=target.device) + .5) * length / size).long().clamp(max=length - 1)
         result = result.index_select(axis, index)
     return result.to(torch.uint8)
@@ -63,11 +81,11 @@ def restore_logits(logits, native_shape):
     return F.interpolate(tensor, size=native_shape, mode='trilinear', align_corners=False)[0, 0].numpy()
 
 
-def zoom_samples(samples, native_size):
-    if native_size <= 0 or native_size >= 128 or (128 - native_size) % 2:
-        raise ValueError('Native ROI must be a centered smaller even cube')
-    start = (128 - native_size) // 2
-    selection = (slice(start, start + native_size),) * 3
+def zoom_samples(samples, native_size_xyz):
+    if len(native_size_xyz) != 3 or any(size <= 0 or size > 128 or (128 - size) % 2 for size in native_size_xyz):
+        raise ValueError('Native ROI must be a centered even XYZ cuboid no larger than 128³')
+    starts = [(128 - size) // 2 for size in native_size_xyz]
+    selection = tuple(slice(start, start + size) for start, size in zip(starts, native_size_xyz))
     result = []
     for sample in samples:
         if tuple(sample['target'].shape[-3:]) != (128, 128, 128):
@@ -77,22 +95,22 @@ def zoom_samples(samples, native_size):
         if int(sample['target'].sum()) != metadata['full_target_voxels']:
             raise ValueError('Original 128-cube does not retain the full target')
         direction = np.asarray(metadata['direction']).reshape(3, 3)
-        metadata['crop_origin_mm'] = (np.asarray(metadata['crop_origin_mm']) + direction @ (np.full(3, start) * metadata['spacing_mm'])).tolist()
-        metadata['crop_offset_xyz'] = (np.asarray(metadata['crop_offset_xyz']) + start).tolist()
+        metadata['crop_origin_mm'] = (np.asarray(metadata['crop_origin_mm']) + direction @ (np.asarray(starts) * metadata['spacing_mm'])).tolist()
+        metadata['crop_offset_xyz'] = (np.asarray(metadata['crop_offset_xyz']) + starts).tolist()
         metadata['crop_target_voxels'] = int(target.sum())
         metadata['target_retention'] = int(target.sum()) / metadata['full_target_voxels']
         valid = sample['valid'][selection].copy()
         metadata['crop_padding_voxels'] = int((~valid).sum())
         image = F.interpolate(sample['image'][(...,) + selection], size=(128,) * 3, mode='trilinear', align_corners=False)
         model_target = resize_labels(target)
-        roundtrip = restore_logits(model_target[0, 0].float().numpy() * 2 - 1, (native_size,) * 3) > 0
+        roundtrip = restore_logits(model_target[0, 0].float().numpy() * 2 - 1, tuple(native_size_xyz)) > 0
         gt = target[0, 0].numpy().astype(bool)
         if not gt.any():
             raise ValueError(f"Empty native ROI for {sample['name']}; the chosen training policy is invalid")
         count = int(gt.sum()) + int(roundtrip.sum())
         item = {**sample, 'image': image, 'target': model_target,
                 'raw': sample['raw'][selection].copy(), 'metadata': metadata, 'valid': valid,
-                'native_target': gt, 'native_size': native_size,
+                'native_target': gt, 'native_size_xyz': list(native_size_xyz),
                 'gt_label_roundtrip_dice': 2 * int((gt & roundtrip).sum()) / count if count else None}
         result.append(item)
     return result
@@ -117,7 +135,7 @@ def overlay_native(path, sample, prediction):
                     ax.contour(mask, levels=[.5], colors=[color], linewidths=.8)
             ax.set_title(f'Native axis {axis}, slice {index}: ' + ['GT', 'prediction', 'GT + prediction'][column], fontsize=8)
             ax.axis('off')
-    fig.suptitle(f"Native ROI {sample['native_size']}³ / model input 128³; target retained {sample['metadata']['target_retention']:.1%}; probability threshold 0.5")
+    fig.suptitle(f"Native ROI XYZ {sample['native_size_xyz']} / model input 128³; target retained {sample['metadata']['target_retention']:.1%}; probability threshold 0.5")
     fig.tight_layout()
     fig.savefig(path, dpi=140)
     plt.close(fig)
@@ -200,12 +218,12 @@ class ZoomExperiment:
         if file_hash(path) != self.v3_summary['best_checkpoint_sha256']:
             raise ValueError('V3 best checksum differs from its completed summary')
         self.v3_path = path
-        return {'experiment': 'v4_roi_zoom', 'zoom_module_sha256': file_hash(Path(__file__)),
+        return {'experiment': 'v4_anisotropic_roi_zoom', 'zoom_module_sha256': file_hash(Path(__file__)),
                 'zoom_entrypoint_sha256': file_hash(Path(__file__).with_name('train_private_zoom.py')),
                 'v3_control_sha256': {name: file_hash(v3 / name) for name in ('summary.json', 'config.json', 'source_provenance.json', 'sam_model_side_val_best.pth')},
-                'native_roi_candidates': [64, 96], 'native_roi_margin': 4,
+                'native_roi_shape_selection': 'independent centered even crop size per XYZ axis, train only; four-voxel margin', 'native_roi_margin': 4,
                 'normalization': 'Preserve positive-HU Z-normalization of original 128 cube before cropping/resizing',
-                'protocol': 'Fixed native ROI selected from training-only 64/96 candidates with full retention and 4-voxel margin; CT trilinear to128; labels nearest pixel centers; restore logits to native before threshold; full original target scored; 1/5 oracle clicks per side'}
+                'protocol': 'Fixed anisotropic native XYZ ROI selected independently per axis from training-only masks with full retention and 4-voxel margin; CT trilinear to128 cube; labels nearest pixel centers; restore logits to native before threshold; full original target scored; 1/5 oracle clicks per side'}
 
     def prepare_split(self, split, samples, patients, directory, run, resume):
         if split == 'train':
@@ -215,14 +233,14 @@ class ZoomExperiment:
                     raise ValueError('Training-selected ROI policy changed since the frozen run')
             else:
                 (run / 'roi_policy.json').write_text(json.dumps(policy, indent=2))
-            if policy['selected_native_size'] is None:
-                raise ValueError('Neither 64 nor 96 retains all training targets with margin; inspect roi_policy.json before another experiment')
-            self.native_size = policy['selected_native_size']
-            print(f'Training-only ROI policy selected: native {self.native_size}³ -> model 128³', flush=True)
+            if policy['selected_native_size_xyz'] is None:
+                raise ValueError('No centered XYZ crop retains all training targets with margin; inspect roi_policy.json before another experiment')
+            self.native_size_xyz = policy['selected_native_size_xyz']
+            print(f'Training-only ROI policy selected: native XYZ {self.native_size_xyz} -> model 128³', flush=True)
         else:
             self.native_validation = samples
-        zoomed = zoom_samples(samples, self.native_size)
-        rows = [{'case': item['case'], 'side': item['side'], 'native_size': self.native_size,
+        zoomed = zoom_samples(samples, self.native_size_xyz)
+        rows = [{'case': item['case'], 'side': item['side'], 'native_size_xyz': self.native_size_xyz,
                  'full_target_voxels': item['metadata']['full_target_voxels'],
                  'native_crop_target_voxels': item['metadata']['crop_target_voxels'],
                  'target_retention': item['metadata']['target_retention'],
@@ -273,9 +291,9 @@ class ZoomExperiment:
         write_csv(run / 'selected_v4_native_sides.csv', sides)
         write_csv(run / 'selected_v4_native_patients.csv', bilateral)
         matrix = [{'checkpoint': checkpoint, 'roi': roi, 'validation_dice': value} for checkpoint, roi, value in
-                  [('v3', 'native128', controls['v3_native']), ('v3', f'zoom{self.native_size}', controls['v3_zoom']),
-                   ('v4', 'native128', native), ('v4', f'zoom{self.native_size}', means)]]
-        return {'native_roi_size': self.native_size, 'roi_coverage': self.retention,
+                  [('v3', 'native128', controls['v3_native']), ('v3', f'zoomXYZ{self.native_size_xyz}', controls['v3_zoom']),
+                   ('v4', 'native128', native), ('v4', f'zoomXYZ{self.native_size_xyz}', means)]]
+        return {'native_roi_size_xyz': self.native_size_xyz, 'roi_coverage': self.retention,
                 'v3_validation_same_zoom_protocol': controls['v3_zoom'],
                 'validation_dice_change_vs_v3_same_zoom': means['5']['mean_bilateral_patient_dice'] - controls['v3_zoom']['5']['mean_bilateral_patient_dice'],
                 'validation_roi_comparison': matrix,

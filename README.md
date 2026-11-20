@@ -529,7 +529,7 @@ python scripts/inspect_side_training.py
 
 This defaults to `outputs/private/side_training/latest`; `--run-dir` selects an explicit completed v3 run. The command checks full cohort coverage and reproduces the summary's mean Dice from its CSVs before printing aggregates. Training-curve values are moving augmented scores; only the selected-checkpoint aggregates compare train/validation under frozen inference. The report does not modify artifacts or launch another experiment.
 
-The completed v3 inspection shows validation precision 17.07% and recall 24.15%, with mean predicted/target volume ratio 1.42; training precision 25.82% / recall 37.05%. Median bilateral target sizes are about704 voxels (train) and710 (validation). From epoch25 to75, moving augmented training Dice rises 28.81%→48.27% while validation falls 19.25%→13.23%, supporting late overfitting-like behavior. The approved next trial is v4 ROI zoom for these small targets, with its fixed ROI policy selected on training and original-grid full-target scoring. The implementation is present; an improved Dice remains a hypothesis until the controlled DGX run completes.
+The completed v3 inspection shows validation precision 17.07% and recall 24.15%, with mean predicted/target volume ratio 1.42; training precision 25.82% / recall 37.05%. Median bilateral target sizes are about704 voxels (train) and710 (validation). From epoch25 to75, moving augmented training Dice rises 28.81%→48.27% while validation falls 19.25%→13.23%, supporting late overfitting-like behavior. The approved next trial is v4 ROI zoom for these small targets, with its fixed ROI shape selected on training and original-grid full-target scoring. An improved Dice remains a hypothesis until the controlled DGX run completes.
 
 ### Run the controlled v4 ROI-zoom experiment
 
@@ -541,7 +541,9 @@ conda activate fsdp-med3d
 bash scripts/launch_private_zoom_nohup.sh
 ```
 
-The launcher requires the completed v3 checkpoint, the existing validation baseline, prepared private data, and original Turbo weights. It writes a new isolated run under `runs/`, logs under `logs/zoom_training/`, and a `outputs/private/zoom_training/latest` link. It does not stop or overwrite an existing run. Before model updates, it assesses native 64³ and 96³ candidates using only the 54 training patients and selects the smallest crop retaining every training side target with a four-voxel margin. If neither candidate meets that rule, it stops before training and records `roi_policy.json`/`failure.json` for review.
+The launcher requires the completed v3 checkpoint, the existing validation baseline, prepared private data, and original Turbo weights. It writes a new isolated run under `runs/`, logs under `logs/zoom_training/`, and an `outputs/private/zoom_training/latest` link. It does not stop or overwrite an existing run. Before model updates, it selects the minimum fixed native crop shape independently on each XYZ tensor axis, using only the 54 training patients, that retains every side target with a four-voxel margin. CT is interpolated trilinearly and labels with nearest-neighbor sampling to the model's 128³ input. Any validation target outside the crop remains in the original full-target denominator and is penalized. If no centered shape meets the train-only rule, it stops before training and records `roi_policy.json`/`failure.json`.
+
+The initial cubic 64³/96³ policy stopped before optimizer updates. The saved train-only audit showed the minimum crop sizes on SimpleITK array axes Z/Y/X were 120/90/38, equivalent to model tensor axes X/Y/Z of 38/90/120. The revised policy selects those axis sizes from the actual training masks rather than hard-coding them; it also re-evaluates v3 with that same fixed shape.
 
 Monitor the log and early ROI report in another terminal:
 
@@ -551,7 +553,7 @@ cat outputs/private/zoom_training/latest/roi_policy.json
 cat outputs/private/zoom_training/latest/progress.json
 ```
 
-When complete, inspect `outputs/private/zoom_training/latest/summary.json`, `roi_controls.json`, `best_validation/patients.csv`, `best_validation/representatives/`, and `selected_v4_native_patients.csv`. The run reports crop retention, full-target Dice after restoration to the original grid, v3 under the matching zoom protocol, and the native/zoom results for the selected v4 checkpoint. Native128 and zoom ROI are different GT-assisted protocols; preserve the 20-patient test split until a final protocol is selected.
+When complete, inspect `outputs/private/zoom_training/latest/summary.json`, `roi_policy.json`, `roi_controls.json`, `best_validation/patients.csv`, `best_validation/representatives/`, and `selected_v4_native_patients.csv`. The run reports crop retention, full-target Dice after restoration to the original grid, v3 under the matching zoom protocol, and the native/zoom results for the selected v4 checkpoint. Native128 and anisotropic zoom are different GT-assisted protocols; preserve the 20-patient test split until a final protocol is selected.
 
 ## DGX workflow
 
