@@ -570,6 +570,8 @@ Inspect existing v4 precision/recall, volume errors and curve without starting a
 python scripts/inspect_side_training.py --run-dir outputs/private/zoom_training/latest
 ```
 
+The supplied v4 inspection reports validation precision21.52%, recall25.13%, mean predicted/target volume ratio1.259 (pooled1.179); frozen training precision25.62%, recall28.48%. Both missed target and false-positive overlap remain substantial. Validation peaks at epoch15 (22.45%) and drops to15.48% at65, while moving augmented model-grid training Dice rises26.35% to50.70%; those moving scores are not the selected checkpoint's frozen native-grid training Dice. A proposed next controlled experiment trains only the mask decoder from original Turbo with frozen encoders and the same v4 recipe. This remains a hypothesis requiring review/authorization before implementation and training.
+
 ## DGX workflow
 
 1. Clone the repository.
