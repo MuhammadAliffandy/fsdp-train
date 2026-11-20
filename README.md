@@ -479,6 +479,8 @@ Artifacts include `comparison.csv`, `side_cases.csv`, `patient_cases.csv`, patie
 
 The primary comparison is **mean original-grid bilateral patient Dice** at a fixed click budget; per-side and minimum patient scores reveal missed sides. The tiny train/validation gap uses the held-in training reference copied from the previous completed run; training scans are not re-read. This is GT-assisted interactive validation: @1 uses two total clicks and @5 uses ten total clicks, plus GT-derived side crops. It is not a direct comparison with the old 0.12696 result using one bilateral ROI/five total clicks, and does not measure automatic deployment performance. Keep the 20 test patients reserved. After reviewing the actual validation results, choose the next full-cohort training configuration; this command does not launch training or promise a particular validation Dice.
 
+The actual first side-protocol comparison completed on all 10 validation patients: bilateral patient Dice @5 per side was **5.99% Turbo / 10.17% v2 best / 1.17% tiny best**. Tiny's held-in training result was 79.27%, a 78.10-point gap. Its mean validation recall was 0.71%; the high two-patient training score did not generalize. All side targets were fully retained, but this does not establish that all preprocessing or anatomical assumptions are correct. The old 12.70% v2 validation score used a different crop/click protocol and is not directly comparable. The next proposed experiment is side-specific training on all 54 training patients with selection on the fixed 10 validation patients, starting from original Turbo; no such new full-cohort run has been launched yet.
+
 ## DGX workflow
 
 1. Clone the repository.
