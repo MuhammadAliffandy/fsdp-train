@@ -529,6 +529,8 @@ python scripts/inspect_side_training.py
 
 This defaults to `outputs/private/side_training/latest`; `--run-dir` selects an explicit completed v3 run. The command checks full cohort coverage and reproduces the summary's mean Dice from its CSVs before printing aggregates. Training-curve values are moving augmented scores; only the selected-checkpoint aggregates compare train/validation under frozen inference. The report does not modify artifacts or launch another experiment.
 
+The completed v3 inspection shows validation precision 17.07% and recall 24.15%, with mean predicted/target volume ratio 1.42; training precision 25.82% / recall 37.05%. Median bilateral target sizes are about704 voxels (train) and710 (validation). From epoch25 to75, moving augmented training Dice rises 28.81%→48.27% while validation falls 19.25%→13.23%, supporting late overfitting-like behavior. A proposed next trial is ROI zoom for these small targets, with ROI policy chosen on training and original-grid full-target scoring. This remains a hypothesis/plan, not an implemented or completed improvement; compare checkpoints under the same new ROI/click protocol and preserve test.
+
 ## DGX workflow
 
 1. Clone the repository.
