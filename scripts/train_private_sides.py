@@ -93,7 +93,7 @@ def train_epoch(model, samples, optimizer, scaler, criterion, device, epoch, see
             'optimizer_updates': updates, 'amp_skipped_updates': skips, 'expected_updates': math.ceil(len(samples) / accumulation)}
 
 
-def execute(args):
+def execute(args, experiment=None):
     run, data = args.run_dir, args.data_dir
     manifest_file = data / 'manifest.json'
     manifest = json.loads(manifest_file.read_text())
@@ -116,6 +116,9 @@ def execute(args):
                   selection='maximum mean validation full-target bilateral patient Dice at five clicks per side',
                   protocol='native 128 side-GT-centered ROIs, no resampling, full target retention, native prompt order; 1/5 clicks PER SIDE equals 2/10 per patient',
                   test_images_read=False)
+    evaluator = evaluate if experiment is None else experiment.evaluate
+    if experiment is not None:
+        config.update(experiment.configuration(args, manifest, config))
     if args.resume:
         if json.loads((run / 'config.json').read_text()) != config:
             raise ValueError('Resume code/data/config differs from the frozen run; use a new run')
@@ -145,6 +148,8 @@ def execute(args):
             raise ValueError(f'{split}: missing patients or side targets')
         for sample in samples:
             sample['target'] = sample['target'].to(torch.uint8)
+        if experiment is not None:
+            samples = experiment.prepare_split(split, samples, patients, directory, run, args.resume)
         samples_by_split[split], patients_by_split[split] = samples, patients
         name = 'selected_training_patients.json' if split == 'train' else 'selected_validation_patients.json'
         provenance[split] = json.loads((directory / name).read_text())
@@ -192,8 +197,11 @@ def execute(args):
                 'python_rng_state': random.getstate(), 'cuda_rng_state': torch.cuda.get_rng_state_all() if device.type == 'cuda' else []}
     validation, val_patients = samples_by_split['val'], patients_by_split['val']
     if not args.resume:
-        means, side_rows, patient_rows = evaluate(model, validation, val_patients, device, progress_label='initial_validation')
-        error = reproduce_baseline(args.baseline_dir, side_rows, patient_rows)
+        if experiment is None:
+            means, side_rows, patient_rows = evaluator(model, validation, val_patients, device, progress_label='initial_validation')
+            error = reproduce_baseline(args.baseline_dir, side_rows, patient_rows)
+        else:
+            means, side_rows, patient_rows, error = experiment.initial_validation(model, validation, val_patients, device, args, run)
         best = means['5']['mean_bilateral_patient_dice']
         early = {'anchor': best, 'last_improvement_epoch': 0}
         (run / 'preflight.json').write_text(json.dumps({'passed': True, 'source_patients_verified': 64,
@@ -213,7 +221,7 @@ def execute(args):
                'val_bilateral_dice_5_per_side': None, 'val_mean_side_dice_5': None, 'val_minimum_patient_dice_5': None}
         improved = False
         if epoch == 0 or (epoch + 1) % args.val_every == 0 or epoch + 1 == args.epochs:
-            means, side_rows, patient_rows = evaluate(model, validation, val_patients, device, progress_label=f'validation_epoch_{epoch + 1}')
+            means, side_rows, patient_rows = evaluator(model, validation, val_patients, device, progress_label=f'validation_epoch_{epoch + 1}')
             score = means['5']['mean_bilateral_patient_dice']
             row.update(val_bilateral_dice_1_per_side=means['1']['mean_bilateral_patient_dice'], val_bilateral_dice_5_per_side=score,
                        val_mean_side_dice_5=means['5']['mean_side_dice'], val_minimum_patient_dice_5=means['5']['minimum_bilateral_patient_dice'])
@@ -242,7 +250,7 @@ def execute(args):
     if selected_epoch != best_epoch or not np.isclose(expected_best, best, atol=1e-8, rtol=0):
         raise ValueError('Best/latest checkpoint metadata are inconsistent; inspect an interrupted checkpoint save')
     del chosen
-    means, side_rows, patient_rows = evaluate(model, validation, val_patients, device, progress_label='selected_validation')
+    means, side_rows, patient_rows = evaluator(model, validation, val_patients, device, progress_label='selected_validation')
     if not np.isclose(means['5']['mean_bilateral_patient_dice'], expected_best, atol=1e-4, rtol=0):
         raise ValueError('Reloaded validation-best checkpoint does not reproduce its selection score')
     export = run / 'best_validation'
@@ -254,15 +262,15 @@ def execute(args):
     export.mkdir()
     write_csv(export / 'sides.csv', side_rows)
     write_csv(export / 'patients.csv', patient_rows)
-    export_representatives(model, validation, val_patients, device, export, side_rows, patient_rows)
-    training_means, training_sides, training_patients = evaluate(model, samples_by_split['train'], patients_by_split['train'], device,
+    export_representatives(model, validation, val_patients, device, export, side_rows, patient_rows, evaluation_function=evaluator)
+    training_means, training_sides, training_patients = evaluator(model, samples_by_split['train'], patients_by_split['train'], device,
                                                               progress_label='selected_frozen_training')
     write_csv(export / 'frozen_training_sides.csv', training_sides)
     write_csv(export / 'frozen_training_patients.csv', training_patients)
     completed = history[-1]['epoch'] if history else start
     baseline_summary = json.loads((args.baseline_dir / 'summary.json').read_text())
     previous_v2 = next((row['mean_bilateral_patient_dice'] for row in baseline_summary.get('comparison', [])
-                        if row['checkpoint'] == 'v2_best' and row['clicks_per_side'] == 5), None)
+                        if experiment is None and row['checkpoint'] == 'v2_best' and row['clicks_per_side'] == 5), None)
     change_vs_v2 = means['5']['mean_bilateral_patient_dice'] - previous_v2 if previous_v2 is not None else None
     summary = {'complete': True, 'completed_epochs': completed, 'planned_epochs': args.epochs, 'stopped_early': stopped,
                'best_epoch': selected_epoch, 'train_patients': 54, 'train_side_rois': 108, 'validation_patients': 10, 'validation_side_rois': 20,
@@ -273,6 +281,8 @@ def execute(args):
                'best_checkpoint_sha256': file_hash(run / 'sam_model_side_val_best.pth'),
                'protocol': config['protocol'], 'test_images_read': False, 'artifacts': str(run),
                'interpretation': 'GT-assisted interactive validation; not automatic test/deployment performance', 'export_directory': str(export)}
+    if experiment is not None:
+        summary.update(experiment.finalize(model, patients_by_split, device, means, args, run, provenance))
     (run / 'summary.json').write_text(json.dumps(summary, indent=2, allow_nan=False))
     print(json.dumps(summary, indent=2), flush=True)
 

@@ -88,11 +88,11 @@ def paired_changes(rows):
     return paired
 
 
-def export_representatives(model, samples, patients, device, stage_dir, side_rows, patient_rows):
+def export_representatives(model, samples, patients, device, stage_dir, side_rows, patient_rows, evaluation_function=evaluate):
     ranked = sorted([row for row in patient_rows if row['clicks'] == 5], key=lambda row: (row['dice_full_target'], row['case']))
     aliases = {ranked[0]['case'], ranked[len(ranked) // 2]['case'], ranked[-1]['case']}
     subset = [sample for sample in samples if sample['case'] in aliases]
-    _, exported_sides, exported_patients = evaluate(model, subset, {key: patients[key] for key in aliases}, device,
+    _, exported_sides, exported_patients = evaluation_function(model, subset, {key: patients[key] for key in aliases}, device,
                                                    export=stage_dir / 'representatives', progress_label='export')
     for exported, original, fields in [(exported_sides, side_rows, ('case', 'side', 'clicks')),
                                        (exported_patients, patient_rows, ('case', 'clicks'))]:
