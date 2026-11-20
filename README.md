@@ -614,6 +614,8 @@ RESUME=1 DECODER_RUN_NAME=fsdp_private_decoder_v5_YOUR_RUN_NAME bash scripts/lau
 
 Selection uses the same GT-assisted native-grid bilateral full-target Dice at five clicks per side (ten total). The20 test patients remain reserved for the final frozen protocol.
 
+V5 completed110/200 epochs via early stopping, selecting epoch60. Its five-per-side frozen training Dice is22.38%, validation19.09%, and train/validation gap3.29 points. V4's reproduced validation is22.45%, so v5 loses3.36 points. Encoder state matches original Turbo;7,575,636 decoder parameters were trainable of100,509,232 total. Both splits retain100% of their targets; test remains unread. V4 remains the best recorded pipeline. These results do not support decoder-only adaptation with this recipe as a replacement for v4; a smaller gap alone does not establish better learning. Partial image-encoder adaptation is a proposed next experiment, pending review rather than an implemented fix.
+
 ## DGX workflow
 
 1. Clone the repository.
