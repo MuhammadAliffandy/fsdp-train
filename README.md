@@ -555,6 +555,21 @@ cat outputs/private/zoom_training/latest/progress.json
 
 When complete, inspect `outputs/private/zoom_training/latest/summary.json`, `roi_policy.json`, `roi_controls.json`, `best_validation/patients.csv`, `best_validation/representatives/`, and `selected_v4_native_patients.csv`. The run reports crop retention, full-target Dice after restoration to the original grid, v3 under the matching zoom protocol, and the native/zoom results for the selected v4 checkpoint. Native128 and anisotropic zoom are different GT-assisted protocols; preserve the 20-patient test split until a final protocol is selected.
 
+The first completed v4 run selected epoch15 and stopped at65/200. At five clicks per side, its frozen training bilateral Dice is26.46% and validation Dice22.45%, with full target retention on both splits. Validation controls:
+
+| Checkpoint | Native128 ROI | Zoom XYZ38×90×120 ROI |
+| --- | ---: | ---: |
+| v3, selected epoch25 | 19.25% | 9.03% |
+| v4, selected epoch15 | 9.75% | 22.45% |
+
+V4 improves over v3 under matching zoom inference by13.42 percentage points. Comparing their respective training/inference pipelines, the best validation result rises3.20 points from19.25% to22.45%; this is a changed ROI protocol, not an isolated inference benefit. Both models are sensitive to the ROI used at inference. These are GT-assisted validation scores on ten patients with ten total oracle clicks per patient; they do not establish80% Dice or independent test performance.
+
+Inspect existing v4 precision/recall, volume errors and curve without starting another training run:
+
+```bash
+python scripts/inspect_side_training.py --run-dir outputs/private/zoom_training/latest
+```
+
 ## DGX workflow
 
 1. Clone the repository.
