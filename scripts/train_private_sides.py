@@ -54,8 +54,10 @@ def reproduce_baseline(directory, sides, patients):
     return maximum_error
 
 
-def train_epoch(model, samples, optimizer, scaler, criterion, device, epoch, seed, accumulation):
+def train_epoch(model, samples, optimizer, scaler, criterion, device, epoch, seed, accumulation, train_mode=None):
     model.train()
+    if train_mode is not None:
+        train_mode(model)
     order = torch.randperm(len(samples), generator=torch.Generator().manual_seed(seed + epoch)).tolist()
     optimizer.zero_grad(set_to_none=True)
     losses, dices, updates, skips = [], [], 0, 0
@@ -162,7 +164,8 @@ def execute(args, experiment=None):
     from segment_anything.build_sam3D import sam_model_registry3D
     from monai.losses import DiceCELoss
     model = sam_model_registry3D['vit_b_ori'](checkpoint=None).to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=.1)
+    parameters = experiment.configure_model(model, run) if hasattr(experiment, 'configure_model') else model.parameters()
+    optimizer = torch.optim.AdamW(parameters, lr=args.lr, weight_decay=.1)
     warmup = min(5, args.epochs)
     def schedule(epoch):
         if epoch < warmup:
@@ -189,6 +192,8 @@ def execute(args, experiment=None):
         if device.type == 'cuda':
             torch.cuda.set_rng_state_all(source['cuda_rng_state'])
     del source
+    if hasattr(experiment, 'verify_frozen'):
+        experiment.verify_frozen(model, args, run)
     def state(epoch):
         return {'epoch': epoch, 'model_state_dict': model.state_dict(), 'optimizer_state_dict': optimizer.state_dict(),
                 'lr_scheduler_state_dict': scheduler.state_dict(), 'scaler_state_dict': scaler.state_dict(),
@@ -202,6 +207,8 @@ def execute(args, experiment=None):
             error = reproduce_baseline(args.baseline_dir, side_rows, patient_rows)
         else:
             means, side_rows, patient_rows, error = experiment.initial_validation(model, validation, val_patients, device, args, run)
+        if hasattr(experiment, 'verify_frozen'):
+            experiment.verify_frozen(model, args, run)
         best = means['5']['mean_bilateral_patient_dice']
         early = {'anchor': best, 'last_improvement_epoch': 0}
         (run / 'preflight.json').write_text(json.dumps({'passed': True, 'source_patients_verified': 64,
@@ -215,12 +222,15 @@ def execute(args, experiment=None):
     stopped = args.resume and args.patience_epochs > 0 and start - early['last_improvement_epoch'] >= args.patience_epochs
     for epoch in range(start, args.epochs) if not stopped else []:
         lr = optimizer.param_groups[0]['lr']
-        metrics = train_epoch(model, samples_by_split['train'], optimizer, scaler, criterion, device, epoch, args.seed, args.accumulation)
+        mode_options = {'train_mode': experiment.train_mode} if hasattr(experiment, 'train_mode') else {}
+        metrics = train_epoch(model, samples_by_split['train'], optimizer, scaler, criterion, device, epoch, args.seed, args.accumulation, **mode_options)
         scheduler.step()
         row = {'epoch': epoch + 1, 'lr': lr, **metrics, 'val_bilateral_dice_1_per_side': None,
                'val_bilateral_dice_5_per_side': None, 'val_mean_side_dice_5': None, 'val_minimum_patient_dice_5': None}
         improved = False
         if epoch == 0 or (epoch + 1) % args.val_every == 0 or epoch + 1 == args.epochs:
+            if hasattr(experiment, 'verify_frozen'):
+                experiment.verify_frozen(model, args, run)
             means, side_rows, patient_rows = evaluator(model, validation, val_patients, device, progress_label=f'validation_epoch_{epoch + 1}')
             score = means['5']['mean_bilateral_patient_dice']
             row.update(val_bilateral_dice_1_per_side=means['1']['mean_bilateral_patient_dice'], val_bilateral_dice_5_per_side=score,
@@ -244,6 +254,8 @@ def execute(args, experiment=None):
         if stopped:
             print(f'Early stopping after epoch {epoch + 1}: no validation gain >{args.min_delta} for {args.patience_epochs} epochs', flush=True)
             break
+    if hasattr(experiment, 'verify_frozen'):
+        experiment.verify_frozen(model, args, run)
     chosen = torch.load(run / 'sam_model_side_val_best.pth', map_location='cpu', weights_only=False)
     model.load_state_dict(chosen['model_state_dict'], strict=True)
     selected_epoch, expected_best = chosen['epoch'], chosen['best_validation_dice']

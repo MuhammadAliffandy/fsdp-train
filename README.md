@@ -570,7 +570,49 @@ Inspect existing v4 precision/recall, volume errors and curve without starting a
 python scripts/inspect_side_training.py --run-dir outputs/private/zoom_training/latest
 ```
 
-The supplied v4 inspection reports validation precision21.52%, recall25.13%, mean predicted/target volume ratio1.259 (pooled1.179); frozen training precision25.62%, recall28.48%. Both missed target and false-positive overlap remain substantial. Validation peaks at epoch15 (22.45%) and drops to15.48% at65, while moving augmented model-grid training Dice rises26.35% to50.70%; those moving scores are not the selected checkpoint's frozen native-grid training Dice. A proposed next controlled experiment trains only the mask decoder from original Turbo with frozen encoders and the same v4 recipe. This remains a hypothesis requiring review/authorization before implementation and training.
+The supplied v4 inspection reports validation precision21.52%, recall25.13%, mean predicted/target volume ratio1.259 (pooled1.179); frozen training precision25.62%, recall28.48%. Both missed target and false-positive overlap remain substantial. Validation peaks at epoch15 (22.45%) and drops to15.48% at65, while moving augmented model-grid training Dice rises26.35% to50.70%; those moving scores are not the selected checkpoint's frozen native-grid training Dice. The next approved experiment is v5 below.
+
+### V5: train only the mask decoder
+
+Start a fresh run on DGX:
+
+```bash
+cd ~/raid/Clara/fsdp-train
+git pull origin main
+conda activate fsdp-med3d
+bash scripts/launch_private_decoder_nohup.sh
+tail -f logs/decoder_training/latest.log
+```
+
+V5 initializes from original Turbo. It keeps the v4 ROI, loss, five-click interactions, patient split, seed, augmentation, accumulation8, AdamW LR2e-5/decay0.1 and warmup/cosine schedule. Only mask decoder parameters are optimized; image and prompt encoders have gradients disabled and stay in eval mode. The default is a200-epoch cap with validation every5 and early stopping after50 epochs without an improvement larger than0.001. This tests the effect of restricting adaptation; it does not assume higher validation Dice.
+
+Before updates, all v4 saved validation side/patient Dice and initial Turbo zoom scores must reproduce within1e-4. V4 supplies a control checkpoint, its train-derived ROI policy, and source/software fingerprints. Any difference stops preflight. The initial Turbo remains eligible for selection. The run checks frozen encoder parameters and persistent buffers against original Turbo at initialization/resume, validation checkpoints and completion.
+
+The launcher defaults to completed v3 and v4 report links. Override `PRIVATE_V3_RUN_DIR`, `PRIVATE_V4_RUN_DIR`, `SIDE_BASELINE_DIR`, or `GPU_ID` when needed. The recipe must match v4; changing LR/epochs/schedule is a separate experiment and is refused by this comparison. New logs/PIDs/report links use `decoder_training`; checkpoints retain names `sam_model_side_val_best.pth` and `sam_model_side_latest.pth` inside the new run. Existing outputs are retained.
+
+Read the parameter/preflight reports and progress from another terminal (files appear as each stage completes):
+
+```bash
+cat outputs/private/decoder_training/latest/trainable_parameters.json
+cat outputs/private/decoder_training/latest/frozen_encoder_check.json
+cat outputs/private/decoder_training/latest/preflight.json
+cat outputs/private/decoder_training/latest/progress.json
+```
+
+On completion:
+
+```bash
+python -m json.tool outputs/private/decoder_training/latest/summary.json
+python scripts/inspect_side_training.py --run-dir outputs/private/decoder_training/latest
+```
+
+The summary reports validation/frozen training scores and the difference versus v4's reproduced validation Dice, plus frozen-encoder checks. Representative overlays and CSVs are under the summary's `export_directory`. If a run fails, inspect its log and `failure.json`; resume only with identical code, settings and resolved control directories:
+
+```bash
+RESUME=1 DECODER_RUN_NAME=fsdp_private_decoder_v5_YOUR_RUN_NAME bash scripts/launch_private_decoder_nohup.sh
+```
+
+Selection uses the same GT-assisted native-grid bilateral full-target Dice at five clicks per side (ten total). The20 test patients remain reserved for the final frozen protocol.
 
 ## DGX workflow
 
