@@ -614,7 +614,44 @@ RESUME=1 DECODER_RUN_NAME=fsdp_private_decoder_v5_YOUR_RUN_NAME bash scripts/lau
 
 Selection uses the same GT-assisted native-grid bilateral full-target Dice at five clicks per side (ten total). The20 test patients remain reserved for the final frozen protocol.
 
-V5 completed110/200 epochs via early stopping, selecting epoch60. Its five-per-side frozen training Dice is22.38%, validation19.09%, and train/validation gap3.29 points. V4's reproduced validation is22.45%, so v5 loses3.36 points. Encoder state matches original Turbo;7,575,636 decoder parameters were trainable of100,509,232 total. Both splits retain100% of their targets; test remains unread. V4 remains the best recorded pipeline. These results do not support decoder-only adaptation with this recipe as a replacement for v4; a smaller gap alone does not establish better learning. Partial image-encoder adaptation is a proposed next experiment, pending review rather than an implemented fix.
+V5 completed110/200 epochs via early stopping, selecting epoch60. Its five-per-side frozen training Dice is22.38%, validation19.09%, and train/validation gap3.29 points. V4's reproduced validation is22.45%, so v5 loses3.36 points. Encoder state matches original Turbo;7,575,636 decoder parameters were trainable of100,509,232 total. Both splits retain100% of their targets; test remains unread. V4 remains the best recorded pipeline. These results do not support decoder-only adaptation with this recipe as a replacement for v4; a smaller gap alone does not establish better learning. The approved partial image-encoder adaptation experiment is implemented as v6 below; its effect on validation remains unmeasured.
+
+### V6: final two image encoder blocks plus mask decoder
+
+The approved v6 experiment starts from original Turbo and optimizes only image encoder blocks10/11 (zero-based indices, of12) and the mask decoder. All other image encoder regions, including the neck, and the prompt encoder are frozen and kept in eval mode. Gradients still pass through the frozen neck to the selected blocks. The v4 ROI/loss/LR/augmentation/split/click/schedule recipe and validation selection are retained. Two blocks is a fixed experiment choice; this setup is not a promised improvement.
+
+Start a fresh run on DGX:
+
+```bash
+cd ~/raid/Clara/fsdp-train
+git pull origin main
+conda activate fsdp-med3d
+bash scripts/launch_private_partial_nohup.sh
+tail -f logs/partial_training/latest.log
+```
+
+V6 uses the same control directories and overrides as v5 (`PRIVATE_V3_RUN_DIR`, `PRIVATE_V4_RUN_DIR`, `SIDE_BASELINE_DIR`, `GPU_ID`). It first reproduces v4 and Turbo zoom validation before model updates. The default cap is200 epochs, validation every5, with50-epoch early-stopping patience/min_delta0.001. The primary comparison is v4's22.45% validation with the same native-grid full-target GT-assisted ROI and five-click-per-side protocol. The20 test patients remain reserved.
+
+Inspect parameter regions, frozen-state checks, progress and the final result as files become available:
+
+```bash
+cat outputs/private/partial_training/latest/trainable_parameters.json
+cat outputs/private/partial_training/latest/frozen_regions_check.json
+cat outputs/private/partial_training/latest/progress.json
+python -m json.tool outputs/private/partial_training/latest/summary.json
+```
+
+Controls retain the inherited filename `decoder_controls.json`, and checkpoints are `sam_model_side_val_best.pth` / `sam_model_side_latest.pth`. The summary reports `validation_dice_change_vs_v4`, native-grid frozen train/validation scores, parameter-region counts and whether all frozen state matches Turbo. The trainable blocks are excluded from that frozen-state claim. Reports and logs use isolated `partial_training` links.
+
+```bash
+python scripts/inspect_side_training.py --run-dir outputs/private/partial_training/latest
+```
+
+After a process failure, inspect the log and `failure.json`; resume requires identical code/settings and the original resolved control paths:
+
+```bash
+RESUME=1 PARTIAL_RUN_NAME=fsdp_private_partial_v6_YOUR_RUN_NAME bash scripts/launch_private_partial_nohup.sh
+```
 
 ## DGX workflow
 
