@@ -519,6 +519,16 @@ RESUME=1 SIDE_RUN_NAME=fsdp_private_side_v3_YOUR_RUN_NAME GPU_ID=0 bash scripts/
 
 Resume restores optimizer, scheduler, scaler, history, early-stopping state and CPU/CUDA/Python/NumPy RNG states. Code (including SAM model source), data hashes, initialization, baseline and settings must match the frozen run. Retain the original overrides and set `SIDE_BASELINE_DIR` to its original resolved comparison directory if the `latest` link has since changed. Changed epoch budgets/schedules require a new run; configuration changes are not silently applied during resume. Failed runs write `failure.json`; inspect that and the log before retrying. No existing process is killed by this launcher.
 
+The first full-cohort v3 run completed via early stopping at epoch 75, selecting epoch 25. Under the unchanged side protocol, mean validation bilateral Dice was **19.25%**, versus v2 **10.17%** (+9.08 percentage points); selected-checkpoint frozen full-training Dice was **30.09%**, a 10.84-point gap. Worst validation patient Dice was 9.55% at five oracle clicks per side. This is improvement on the same validation cohort/protocol, not 80% performance or a test result. Inspect the existing validation history and precision/recall/volume errors before choosing the next change; low scores on both splits at the selected checkpoint do not identify a unique failure mechanism.
+
+To inspect the completed v3 run's existing precision/recall, predicted/target voxel ratios and validation trajectory without loading images or weights:
+
+```bash
+python scripts/inspect_side_training.py
+```
+
+This defaults to `outputs/private/side_training/latest`; `--run-dir` selects an explicit completed v3 run. The command checks full cohort coverage and reproduces the summary's mean Dice from its CSVs before printing aggregates. Training-curve values are moving augmented scores; only the selected-checkpoint aggregates compare train/validation under frozen inference. The report does not modify artifacts or launch another experiment.
+
 ## DGX workflow
 
 1. Clone the repository.
