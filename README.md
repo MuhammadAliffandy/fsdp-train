@@ -678,6 +678,22 @@ python -m json.tool outputs/private/unet_tiny/latest/summary.json
 
 The summary's `diagnostic_passed` must be true before the cohort stage. If it is false, the diagnostic still completed normally; inspect its native overlays, resize roundtrip and metrics before changing the recipe. If the process crashes, inspect the log and `failure.json` instead. Cohort launch verifies the tiny source/config fingerprints, checkpoint and supporting per-side/per-patient CSVs. This prevents a manually changed pass flag from bypassing a failed diagnostic.
 
+The first actual U-Net tiny run finished200 epochs, selecting epoch35 by minimum Dice. Its selected bilateral mean Dice is0.76% and minimum side/patient score0.61%, so the cohort gate remains closed. Full retention does not identify the cause of the low score. Audit best/latest weights, grid restoration, numeric precision and optimizer history before another training change:
+
+```bash
+git pull origin main
+bash scripts/launch_unet_audit_nohup.sh
+tail -f logs/unet_audit/latest.log
+```
+
+After the audit finishes:
+
+```bash
+python -m json.tool outputs/private/unet_audit/latest/overview.json
+```
+
+`UNET_TINY_RUN_DIR` selects an explicit completed tiny run and `GPU_ID` selects the GPU. The audit reads only those two train image/mask pairs and their existing checkpoints, computes gradients without an optimizer, and saves new reports under `outputs/private/unet_audit` without editing training artifacts. `summary.json` contains per-side model/native FP32/AMP scores, label roundtrip, probability statistics, update counts and Dice/BCE gradient probes; `overview.json` is the compact report. Gradient probes use FP32 on the first ROI per checkpoint. These are diagnostics, not new training or threshold tuning. Failure writes an isolated `failure.json`.
+
 After reviewing a passed diagnostic, launch the cohort baseline:
 
 ```bash
