@@ -310,3 +310,43 @@ For every approved run, record the dataset version and checksum, subject IDs per
 ## Immediate preparation gate
 
 Run the NIfTI audit on the public images and private image/mask pairs on DGX. Review image coverage, voxel spacing/orientation, and the private mask value map before resampling, cropping, pseudo-label generation, or any patient split. Training starts only after these findings are recorded and the split protocol is agreed.
+
+## SAM Turbo + CNN 32³: unattended DGX workflow (2026-11-23)
+
+This experiment adds a learned CNN detail branch and residual refinement to the original SAM-Med3D Turbo. The Transformer remains at 8³ tokens with a 128³ context image; the CNN fusion grid is 32³ with half/full detail-resolution skips. It does not change Turbo patch size or claim that 32³ global Transformer tokens fit the old checkpoint.
+
+The original Turbo checkpoint SHA256 is checked, its entire state loaded strictly, and its state verified unchanged when wrapped. New CNN/fusion layers are randomly initialized, with a zero residual output so initial refined logits reproduce the mapped SAM component. Epochs 1–5 train the new modules only; subsequent epochs fine-tune image blocks 10/11 and the mask decoder at LR 1e-5 while new modules use LR 1e-4. Earlier image blocks, neck and prompt encoder stay frozen. This architecture experiment has not yet produced DGX validation results.
+
+Run this single command in an initialized DGX terminal:
+
+```bash
+cd ~/raid/Clara/fsdp-train && git pull --ff-only origin main && conda activate fsdp-med3d && bash scripts/launch_sam_refine32_nohup.sh
+```
+
+It uses the existing SAM source/checkpoint and completed `outputs/private/unet_cohort/latest` as the frozen data/provenance control. It preprocesses original CT/labels into train-selected physical LPS detail grids, creates a centered isotropic 128³ SAM context, checks target retention and roundtrip quality, evaluates initialization, trains up to 200 epochs, selects a checkpoint on validation, verifies selected scores on reload, and exports CSV metrics, a training/patient Dice figure, all 20 validation-side three-plane PNG overlays and native NIfTI patches. Results are bundled into `results.tar.gz` automatically. A preprocessing or training error stops the workflow and records `failure.json`; it does not relax checks or remove patients automatically.
+
+The frozen split remains 54 train, 10 validation, 20 reserved test patients. Context/detail views share physical centers and normalization derived only from train. LR reflections and intensity changes are paired. Loss excludes CT padding; refined and auxiliary SAM losses use FP32 squared DiceCE. There are five oracle error clicks per side, ten total bilaterally; one-click metrics are also reported. Clicks use probability 0.5; the final output threshold is calibrated on all 54 training patients before validation. Early stopping uses a 50-epoch patience with 0.001 minimum validation gain. The same-refined-click coarse SAM component is a component diagnostic, not an independent vanilla-SAM ablation. ROI centers are GT-derived: scores describe interactive GT-assisted segmentation, not automatic full-scan localization.
+
+Monitoring and next-day inspection:
+
+```bash
+tail -n 80 -f logs/sam_refine32/latest.log
+python -m json.tool outputs/private/sam_refine32/latest/progress.json
+python -m json.tool outputs/private/sam_refine32/latest/summary.json
+```
+
+`progress.json` starts after the first training epoch; during CPU preprocessing and initial evaluation, use the log. `summary.json` with `complete: true` appears only after selected-checkpoint verification and export/archive completion. Ctrl+C while running `tail` only exits the monitor. No existing training job is stopped by this command; choose a free GPU with `GPU_ID=1 bash scripts/launch_sam_refine32_nohup.sh` if needed. GPU memory/time have not been measured on DGX for this architecture.
+
+An interrupted training run can resume from its original settings and latest epoch checkpoint:
+
+```bash
+RESUME=1 SAM_REFINE_RUN_NAME=fsdp_private_sam_refine32_ORIGINAL_NAME bash scripts/launch_sam_refine32_nohup.sh
+```
+
+From a local terminal, download the completed bundle using the DGX hostname/IP normally used for SSH:
+
+```bash
+scp 'D13K48009@DGXH100:~/raid/Clara/fsdp-train/outputs/private/sam_refine32/latest/results.tar.gz' ./sam_refine32_results.tar.gz
+```
+
+The archive contains private validation masks and images; keep it with the private research data. It excludes model weights, full preprocessing caches and raw source volumes. No test CT is read by this workflow. The earlier ~87.7% U-Net tiny result remains training-only; this experiment does not imply 80% validation Dice.
