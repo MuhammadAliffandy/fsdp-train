@@ -702,6 +702,8 @@ python -m json.tool outputs/private/unet_audit/latest/threshold_overview.json
 
 `thresholds.json` contains all threshold curves and per-case scores; the compact overview compares0.5 with the candidate maximizing the minimum held-in side/patient Dice (ties prefer proximity to0.5), separately in FP32/AMP for best/latest checkpoints. Choosing thresholds on these two train patients is optimistic calibration; it does not establish validation performance or authorize a gate override. The cohort stage remains blocked until the fixed-protocol diagnostic passes or a reviewed new protocol is implemented.
 
+The completed threshold audit found epoch200 at0.3 reaches87.71% mean bilateral training Dice,84.25% minimum side Dice and85.02% minimum patient Dice, with90.12% mean precision/85.44% mean recall. FP32 and AMP agree. The same weights at0.5 predict an empty native mask and score0. Epoch35 remains poor under the tested thresholds. This supports a calibration explanation for the latest checkpoint's zero hard Dice on these two patients, and demonstrates substantial held-in learning; it does not establish validation performance. The original minimum90% gate is still unmet. A proposed new tiny continuation would freeze0.3, start from the epoch200 latest weights, and test LR0.0001 for at most100 additional epochs with the same90% minimum target. It is pending approval/implementation; no existing gate or old artifact was changed.
+
 After reviewing a passed diagnostic, launch the cohort baseline:
 
 ```bash
@@ -723,6 +725,35 @@ Overrides: `GPU_ID`, `PRIVATE_SOURCE_ROOT`, `PRIVATE_DATA_DIR`, `PRIVATE_V4_RUN_
 ```bash
 RESUME=1 UNET_STAGE=tiny UNET_RUN_NAME=fsdp_private_unet_tiny_YOUR_RUN_NAME bash scripts/launch_private_unet_nohup.sh
 ```
+
+## Export segmentation PNGs on DGX and download with scp
+
+Generate all visualizations on the server from the completed tiny training run and matching threshold audit:
+
+```bash
+cd ~/raid/Clara/fsdp-train
+git pull origin main
+conda activate fsdp-med3d
+bash scripts/launch_unet_visuals_nohup.sh
+tail -f logs/unet_visuals/latest.log
+```
+
+The exporter verifies original source/checkpoint fingerprints and reproduces side/patient scores before declaring success. It does not train or open validation/test images. PNGs include metric bars, Dice matrices for all four sides/two patients, threshold and training curves, native ROI-domain confusion matrices, GT/prediction/error panels for both checkpoints at0.5 and the train-selected candidate (currently0.3), and all native Z slices containing GT or candidate predictions for the latest checkpoint. Physical voxel spacing and slice indices are preserved in the views. GT is cyan; error panels show TP green, FP magenta, FN yellow. These remain two-patient training results, suitable for visual review, not held-out validation claims.
+
+After the log reports `complete: true`:
+
+```bash
+ls outputs/private/unet_visuals/latest/figures
+ls -lh outputs/private/unet_visuals/latest.tar.gz
+```
+
+The tar.gz contains only generated PNGs, CSV metrics, a provenance manifest and a legend/README. It excludes preparation files and original NIfTI volumes. From the laptop, use the DGX IP or SSH hostname that normally works for your account (replace `DGXH100` if necessary):
+
+```bash
+scp 'D13K48009@DGXH100:~/raid/Clara/fsdp-train/outputs/private/unet_visuals/latest.tar.gz' .
+```
+
+Unpack the downloaded archive locally with `tar -xzf latest.tar.gz`. The figures are already rendered by DGX; local rendering is unnecessary. Override `UNET_TINY_RUN_DIR`, `UNET_AUDIT_DIR`, or `GPU_ID` to select explicit sources/GPU. Failures write an isolated `failure.json`; old data, checkpoints and reports are preserved.
 
 ## DGX workflow
 
