@@ -653,6 +653,53 @@ After a process failure, inspect the log and `failure.json`; resume requires ide
 RESUME=1 PARTIAL_RUN_NAME=fsdp_private_partial_v6_YOUR_RUN_NAME bash scripts/launch_private_partial_nohup.sh
 ```
 
+## Supervised 3D U-Net comparator: start with the tiny diagnostic
+
+The approved comparator uses MONAI's volumetric residual U-Net trained from scratch, with no oracle-click input. CT extraction, labels1/9, fixed v4 ROI, normalization,128³ model input, inverse-logit resizing and original-grid full-target bilateral Dice follow v4. Both approaches still use GT-derived crops. SAM and U-Net differ in architecture, initialization, prompting and optimization, so this compares pipelines rather than isolating one architecture change. It does not measure automatic scan-level localization.
+
+Run only the two-patient train diagnostic first:
+
+```bash
+cd ~/raid/Clara/fsdp-train
+git pull origin main
+conda activate fsdp-med3d
+bash scripts/launch_private_unet_nohup.sh
+tail -f logs/unet_tiny/latest.log
+```
+
+The default `UNET_STAGE=tiny` reads two frozen training patients/four sides and uses the saved train-derived v4 ROI policy. It does not open other patient images or validation/test images. Model channels are16/32/64/128/256, strides2/2/2/2, with two residual units and instance normalization. Tiny training uses LR0.001, no weight decay/augmentation, eval mode with gradients, one update per ROI, cap200 and scoring every5/first/final. It can finish earlier if every side and bilateral patient Dice reaches0.90. This is a learnability target, not validation performance. No cohort run starts automatically.
+
+Check progress and the final diagnostic:
+
+```bash
+cat outputs/private/unet_tiny/latest/progress.json
+python -m json.tool outputs/private/unet_tiny/latest/summary.json
+```
+
+The summary's `diagnostic_passed` must be true before the cohort stage. If it is false, the diagnostic still completed normally; inspect its native overlays, resize roundtrip and metrics before changing the recipe. If the process crashes, inspect the log and `failure.json` instead. Cohort launch verifies the tiny source/config fingerprints, checkpoint and supporting per-side/per-patient CSVs. This prevents a manually changed pass flag from bypassing a failed diagnostic.
+
+After reviewing a passed diagnostic, launch the cohort baseline:
+
+```bash
+UNET_STAGE=cohort bash scripts/launch_private_unet_nohup.sh
+tail -f logs/unet_cohort/latest.log
+```
+
+This uses54train/10validation patients and leaves20test patients reserved. It starts from the same random initialization as the tiny run, not from tiny-learned weights. Defaults: AdamW LR0.001/decay0.0001, DiceCE, XYZ flips, accumulation8 including the final four ROIs, warmup/cosine, cap200, validation every5, early-stop patience50/min_delta0.001. Best selection uses native full-target bilateral validation Dice. These are initial baseline settings, not an optimized recipe.
+
+```bash
+cat outputs/private/unet_cohort/latest/progress.json
+python -m json.tool outputs/private/unet_cohort/latest/summary.json
+```
+
+The cohort summary includes selected validation/frozen train Dice, precision/recall, train/validation gap and a comparison with v4's five-click-per-side validation. Actual per-patient CSVs and representative PNG/NIfTI predictions are in its `export_directory`. U-Net CSVs use `oracle_clicks=0`; the older SAM-only inspection script should not be applied to these reports.
+
+Overrides: `GPU_ID`, `PRIVATE_SOURCE_ROOT`, `PRIVATE_DATA_DIR`, `PRIVATE_V4_RUN_DIR`, `UNET_TINY_RUN_DIR`, `UNET_STAGE`, `UNET_RUN_NAME`, `NUM_EPOCHS`, `VAL_EVERY`, `LEARNING_RATE`, `SEED`, `ACCUMULATION_STEPS`, `PATIENCE_EPOCHS`, `MIN_DELTA`. Matching v4 package versions/source helpers and seed are required. Keep the original resolved v4/tiny control directories if their latest links move. Checkpoints are `unet_best.pth` and `unet_latest.pth`; strict resume restores optimizer/scheduler/scaler/RNG/history and refuses code/config/source changes:
+
+```bash
+RESUME=1 UNET_STAGE=tiny UNET_RUN_NAME=fsdp_private_unet_tiny_YOUR_RUN_NAME bash scripts/launch_private_unet_nohup.sh
+```
+
 ## DGX workflow
 
 1. Clone the repository.
