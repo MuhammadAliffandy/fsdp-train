@@ -912,3 +912,11 @@ scp 'D13K48009@DGXH100:~/raid/Clara/fsdp-train/outputs/private/sam_refine32/late
 ```
 
 The archive contains private validation masks and images; keep it with the private research data. It excludes model weights, full preprocessing caches and raw source volumes. No test CT is read by this workflow. The earlier ~87.7% U-Net tiny result remains training-only; this experiment does not imply 80% validation Dice.
+
+If hybrid preprocessing fails all grids and the remaining 0.25 mm failures are train_26, run this train-only reconstruction diagnostic before restarting training:
+
+```bash
+python -u scripts/audit_physical_roundtrip.py --run-dir outputs/private/sam_refine32/latest --train-alias train_26
+```
+
+The command reports source geometry, existing-grid reconstruction and a fixed subvoxel phase diagnostic. Full results are saved under `outputs/private/roundtrip_audit/<timestamp>/summary.json`. It does not launch training or change the quality gate.

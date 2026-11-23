@@ -350,3 +350,9 @@ scp 'D13K48009@DGXH100:~/raid/Clara/fsdp-train/outputs/private/sam_refine32/late
 ```
 
 The archive contains private validation masks and images; keep it with the private research data. It excludes model weights, full preprocessing caches and raw source volumes. No test CT is read by this workflow. The earlier ~87.7% U-Net tiny result remains training-only; this experiment does not imply 80% validation Dice.
+
+## DGX hybrid preprocessing failure (2026-11-23)
+
+The first SAM refine32 run stopped before loading/training the model. All three training-selected grids retained all targets with >5 mm margin. Minimum label roundtrip Dice was 0.861024 at 0.35 mm (21 failing sides), 0.910903 at 0.30 mm (4 failing sides), and 0.914498 at 0.25 mm (2 failing sides). The 0.25 mm mean was 0.997294; both remaining failures were train_26 (RFSDP 0.9168, LFSDP 0.9145). These are label reconstruction metrics, not model performance. No validation or test image was prepared in this failed run.
+
+Do not remove train_26, lower the 0.95 gate, or assume a finer full-volume grid fixes it. `scripts/audit_physical_roundtrip.py` reads only this training case and compares current signed-label linear reconstruction with nearest label return plus fixed fractional grid-origin shifts. It records original geometry and FP/FN counts to distinguish a sampling/phase effect from other causes. It does not modify sources, old runs, training settings, or select a preprocessing policy. Results must be examined before implementing a new sampling rule.
