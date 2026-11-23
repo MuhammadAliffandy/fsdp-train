@@ -30,3 +30,4 @@ else
 fi
 echo "Log: $LOG_ROOT/latest.log"
 echo "Report: $REPORT_ROOT/latest/summary.json"
+echo "Train-only threshold report: $REPORT_ROOT/latest/threshold_overview.json"

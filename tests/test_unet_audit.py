@@ -19,6 +19,31 @@ from test_unet_training import ProxyUNet, setup
 
 
 class UNetAuditTests(unittest.TestCase):
+    def test_subthreshold_foreground_can_recover_without_changing_05_control(self):
+        records, patients = [], {}
+        for alias in ('train_01', 'train_02'):
+            targets = []
+            for side, point in [('RFSDP', (1, 1, 1)), ('LFSDP', (2, 2, 2))]:
+                target = np.zeros((4, 4, 4), bool)
+                target[point] = True
+                probability = np.full(target.shape, .001)
+                probability[target] = .45
+                logits = np.log(probability / (1 - probability))
+                sample = {'case': alias, 'side': side, 'native_target': target,
+                          'valid': np.ones(target.shape, bool),
+                          'metadata': {'full_target_voxels': 1, 'crop_offset_xyz': [0, 0, 0]}}
+                records.append({'sample': sample, 'fp32': logits, 'amp': logits.copy()})
+                targets.append(np.ravel_multi_index(point, target.shape))
+            patients[alias] = {'shape': target.shape, 'target_indices': np.array(targets)}
+        curves = audit.threshold_sweep(records, patients, thresholds=(.1, .3, .4, .5))
+        for result in curves.values():
+            self.assertEqual(result['best_train_only_candidate']['threshold'], .4)
+            self.assertEqual(result['best_train_only_candidate']['minimum_diagnostic_dice'], 1.)
+            half = next(row for row in result['curve'] if row['threshold'] == .5)
+            self.assertEqual(half['mean_bilateral_patient_dice'], 0.)
+        with self.assertRaisesRegex(ValueError, 'both sides'):
+            audit.threshold_sweep(records[:-1], patients)
+
     def test_independent_dice_keeps_missing_targets_and_discards_padding(self):
         logits, target = np.ones((3, 3, 3)), np.zeros((3, 3, 3), bool)
         target[1, 1, 1] = True
@@ -43,6 +68,10 @@ class UNetAuditTests(unittest.TestCase):
             audit.execute(SimpleNamespace(run_dir=args.run_dir, output_dir=output, device='cpu'))
             report = json.loads((output / 'summary.json').read_text())
             overview = json.loads((output / 'overview.json').read_text())
+            threshold_report = json.loads((output / 'threshold_overview.json').read_text())
+            self.assertFalse(threshold_report['gate_modified'])
+            self.assertFalse(threshold_report['validation_images_read'])
+            self.assertFalse(threshold_report['test_images_read'])
             self.assertTrue(report['complete'])
             self.assertFalse(report['validation_images_read'])
             self.assertFalse(report['test_images_read'])

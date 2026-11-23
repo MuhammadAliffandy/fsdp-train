@@ -13,7 +13,48 @@ import torch
 import train_private_unet as baseline
 from evaluate_private_validation import file_hash
 from roi_zoom import restore_logits, zoom_samples
-from train_private_tiny import prepare_samples
+from train_private_tiny import native_prediction_indices, prepare_samples, sparse_scores
+
+
+THRESHOLDS = (.05, .10, .20, .30, .35, .40, .45, .50, .55, .60, .70, .80, .90, .95)
+
+
+def threshold_sweep(records, patients, thresholds=THRESHOLDS):
+    if (len(records) != 2 * len(patients)
+            or any(sorted(record['sample']['side'] for record in records if record['sample']['case'] == alias)
+                   != ['LFSDP', 'RFSDP'] for alias in patients)):
+        raise ValueError('Threshold audit requires both sides for each training patient')
+    curves = {}
+    for precision in ('fp32', 'amp'):
+        curve = []
+        for threshold in thresholds:
+            if not 0 < threshold < 1:
+                raise ValueError('Threshold probabilities must lie strictly between0 and1')
+            cutoff = np.log(threshold / (1 - threshold))
+            side_rows, restored = [], {}
+            for record in records:
+                sample = record['sample']
+                shifted = record[precision] - cutoff
+                metrics = hard_dice(shifted, sample['native_target'], sample['metadata']['full_target_voxels'], sample['valid'])
+                side_rows.append({'case': sample['case'], 'side': sample['side'], 'dice': metrics['dice']})
+                restored.setdefault(sample['case'], []).append(native_prediction_indices(
+                    shifted > 0, sample['valid'], sample['metadata'], patients[sample['case']]['shape']))
+            patient_rows = [{'case': alias, **sparse_scores(np.concatenate(parts), patients[alias]['target_indices'])}
+                            for alias, parts in sorted(restored.items())]
+            minimum_side = min(row['dice'] for row in side_rows)
+            minimum_patient = min(row['dice_full_target'] for row in patient_rows)
+            curve.append({'threshold': threshold, 'mean_side_dice': float(np.mean([row['dice'] for row in side_rows])),
+                          'minimum_side_dice': minimum_side,
+                          'mean_bilateral_patient_dice': float(np.mean([row['dice_full_target'] for row in patient_rows])),
+                          'minimum_bilateral_patient_dice': minimum_patient,
+                          'minimum_diagnostic_dice': min(minimum_side, minimum_patient),
+                          'mean_precision': float(np.mean([row['precision'] for row in patient_rows])),
+                          'mean_recall': float(np.mean([row['recall_full_target'] for row in patient_rows])),
+                          'total_predicted_native_voxels': sum(row['predicted_voxels_valid'] for row in patient_rows),
+                          'per_side': side_rows, 'per_patient': patient_rows})
+        selected = max(curve, key=lambda row: (row['minimum_diagnostic_dice'], -abs(row['threshold'] - .5)))
+        curves[precision] = {'curve': curve, 'best_train_only_candidate': selected}
+    return curves
 
 
 def hard_dice(logits, target, full_count=None, valid=None):
@@ -103,7 +144,7 @@ def execute(args):
         sample['target'] = sample['target'].to(torch.uint8)
     samples = zoom_samples(samples, policy['selected_native_size_xyz'])
     device = torch.device(args.device)
-    results, audit_rows = {}, []
+    results, audit_rows, threshold_results = {}, [], {}
     for checkpoint_name in ('unet_best', 'unet_latest'):
         path = run / f'{checkpoint_name}.pth'
         checksum = file_hash(path)
@@ -124,7 +165,7 @@ def execute(args):
             for key, expected in summary['best_selected_metrics'].items():
                 if not np.isclose(frozen_means[key], expected, atol=1e-4, rtol=0):
                     raise ValueError('Best checkpoint does not reproduce the supplied summary')
-        mode_difference = None
+        mode_difference, threshold_records = None, []
         for index, sample in enumerate(samples):
             image, target = sample['image'].to(device), sample['target'].to(device).float()
             with torch.no_grad():
@@ -144,6 +185,7 @@ def execute(args):
                 gt = sample['target'][0, 0].numpy().astype(bool)
                 native_fp32 = restore_logits(fp32[0, 0].cpu().numpy(), sample['native_target'].shape)
                 native_amp = restore_logits(amp[0, 0].cpu().numpy(), sample['native_target'].shape)
+                threshold_records.append({'sample': sample, 'fp32': native_fp32, 'amp': native_amp})
                 synthetic_logits = gt.astype(np.float32) * 2 - 1
                 oracle_roundtrip = restore_logits(synthetic_logits, sample['native_target'].shape)
                 metrics = {
@@ -168,15 +210,39 @@ def execute(args):
         results[checkpoint_name] = {'epoch': epoch, 'sha256': checksum, 'reproduced_metrics': frozen_means,
             'train_eval_maximum_logit_difference_first_roi_fp32': mode_difference,
             'first_roi_gradient_probe': probe}
+        threshold_results[checkpoint_name] = threshold_sweep(threshold_records, patients)
+        for precision, values in threshold_results[checkpoint_name].items():
+            at_half = next(row for row in values['curve'] if row['threshold'] == .5)
+            if precision == 'amp' and not np.isclose(at_half['mean_bilateral_patient_dice'],
+                    frozen_means['mean_bilateral_patient_dice'], atol=1e-4, rtol=0):
+                raise ValueError('Threshold0.5 control does not reproduce unchanged inference')
         del model
     report = {'complete': True, 'run': run.name, 'training_history': history_report(run),
               'audit_script_sha256': file_hash(Path(__file__)),
               'checkpoints': results, 'per_side': audit_rows, 'train_patients': 2, 'side_rois': 4,
               'validation_images_read': False, 'test_images_read': False, 'optimizer_updates': 0,
               'training_artifacts_modified': False,
-              'limitations': 'Gradient probe is FP32 on the first ROI of each checkpoint; no causal conclusion from loss scale alone. Label roundtrip is a transform check, not an achievable Dice ceiling. No threshold tuning or retraining performed.',
+              'limitations': 'Gradient probe is FP32 on the first ROI per checkpoint; loss scale alone is not causal proof. Label roundtrip is not an achievable Dice ceiling. Threshold candidates are evaluated/selected only on two held-in train patients; they do not establish validation or change the fixed0.5 training gate. No retraining performed.',
               'artifacts': str(output)}
     baseline.save_json(output / 'summary.json', report)
+    thresholds_report = {'complete': True, 'run': run.name, 'training_patients': 2, 'training_sides': 4,
+        'thresholds': list(THRESHOLDS), 'checkpoints': threshold_results,
+        'selection': 'maximize minimum of four side and two bilateral patient native Dice; ties prefer proximity to0.5',
+        'protocol': 'Same weights/input/native-logit restoration; vary only sigmoid threshold after restoring logits; source padding excluded, full original target scored',
+        'validation_images_read': False, 'test_images_read': False, 'optimizer_updates': 0,
+        'gate_modified': False, 'training_artifacts_modified': False,
+        'interpretation': 'Held-in training calibration diagnostic only. Candidate threshold/checkpoint selection is optimistic on these two patients. Original threshold0.5 gate remains unchanged.'}
+    baseline.save_json(output / 'thresholds.json', thresholds_report)
+    threshold_overview = {key: value for key, value in thresholds_report.items() if key != 'checkpoints'}
+    threshold_overview['checkpoints'] = {}
+    for checkpoint, precisions in threshold_results.items():
+        threshold_overview['checkpoints'][checkpoint] = {}
+        for precision, values in precisions.items():
+            compact = lambda row: {key: value for key, value in row.items() if key not in ('per_side', 'per_patient')}
+            threshold_overview['checkpoints'][checkpoint][precision] = {
+                'at_threshold_0_5': compact(next(row for row in values['curve'] if row['threshold'] == .5)),
+                'best_train_only_candidate': compact(values['best_train_only_candidate'])}
+    baseline.save_json(output / 'threshold_overview.json', threshold_overview)
     overview = {'complete': True, 'run': run.name,
                 'update_counts': {key: value for key, value in report['training_history'].items() if key != 'measured_epochs'},
                 'curve_first_best_last': [row for row in report['training_history']['measured_epochs']

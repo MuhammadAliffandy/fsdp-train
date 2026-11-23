@@ -692,7 +692,15 @@ After the audit finishes:
 python -m json.tool outputs/private/unet_audit/latest/overview.json
 ```
 
-`UNET_TINY_RUN_DIR` selects an explicit completed tiny run and `GPU_ID` selects the GPU. The audit reads only those two train image/mask pairs and their existing checkpoints, computes gradients without an optimizer, and saves new reports under `outputs/private/unet_audit` without editing training artifacts. `summary.json` contains per-side model/native FP32/AMP scores, label roundtrip, probability statistics, update counts and Dice/BCE gradient probes; `overview.json` is the compact report. Gradient probes use FP32 on the first ROI per checkpoint. These are diagnostics, not new training or threshold tuning. Failure writes an isolated `failure.json`.
+`UNET_TINY_RUN_DIR` selects an explicit completed tiny run and `GPU_ID` selects the GPU. The audit reads only those two train image/mask pairs and their existing checkpoints, computes gradients without an optimizer, and saves new reports under `outputs/private/unet_audit` without editing training artifacts. `summary.json` contains per-side model/native FP32/AMP scores, label roundtrip, probability statistics, update counts and Dice/BCE gradient probes; `overview.json` is the compact report. Gradient probes use FP32 on the first ROI per checkpoint. The revised audit also reports train-only threshold candidates as described below, without changing the original gate or retraining. Failure writes an isolated `failure.json`.
+
+The first actual audit found800/800 updates, no AMP skips, very similar FP32/AMP scores and a98.51% label-transform roundtrip. At epoch200 hard Dice at0.5 is0, but mean model-grid foreground probability is0.456 versus background0.00195. The updated audit tests a calibration hypothesis by scoring fixed probability thresholds0.05–0.95 on the same two training patients, with full native-target scoring. It does not change weights or the original0.5 gate. After pulling the revision, rerun the audit launcher and read:
+
+```bash
+python -m json.tool outputs/private/unet_audit/latest/threshold_overview.json
+```
+
+`thresholds.json` contains all threshold curves and per-case scores; the compact overview compares0.5 with the candidate maximizing the minimum held-in side/patient Dice (ties prefer proximity to0.5), separately in FP32/AMP for best/latest checkpoints. Choosing thresholds on these two train patients is optimistic calibration; it does not establish validation performance or authorize a gate override. The cohort stage remains blocked until the fixed-protocol diagnostic passes or a reviewed new protocol is implemented.
 
 After reviewing a passed diagnostic, launch the cohort baseline:
 
