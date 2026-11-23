@@ -763,6 +763,32 @@ RESUME=1 UNET_RUN_NAME=fsdp_private_unet_cohort_YOUR_ORIGINAL_RUN bash scripts/l
 
 Strict resume verifies code/config/source/calibration, restores model/optimizer/scheduler/scaler/RNG/history and refuses completed runs. An error writes isolated `failure.json` and a traceback in the log. This workspace does not have DGX access; actual cohort launch/results must be confirmed on the server.
 
+## Profile the training dataset before changing preprocessing/augmentation
+
+The actual cohort completed115/200 epochs with early stopping, selecting epoch65. At the frozen threshold0.3 its training/validation mean bilateral Dice is32.50%/18.64%; the0.5 control is empty on both splits. Tiny87.71% remains historical held-in calibration. Full target retention does not establish clinical annotation correctness, physical scale consistency or normalization suitability.
+
+Run the read-only training dataset profiler on DGX:
+
+```bash
+cd ~/raid/Clara/fsdp-train
+git pull --ff-only origin main
+conda activate fsdp-med3d
+bash scripts/launch_dataset_profile_nohup.sh
+tail -f logs/dataset_profile/latest.log
+```
+
+When complete:
+
+```bash
+python -m json.tool outputs/private/dataset_profile/latest/overview.json
+```
+
+`UNET_COHORT_RUN_DIR` overrides the completed cohort control, default `outputs/private/unet_cohort/latest`. The profiler uses CPU and reads only54training image/final-label pairs; it performs no training and leaves source/cohort artifacts unchanged. Code, package versions, original source hashes, v4 ROI and manifest must match. Validation/test image files are not opened. `summary.json` contains all distributions; `overview.json` is the compact shareable report. `patients.csv` and `sides.csv` use train aliases; intermediate prepared crops/provenance remain in the ignored server output directory.
+
+Measurements cover source orientation counts, spacing/anisotropy, ROI extents in millimetres, intensity distributions and clipping, target volumes/bounding boxes/26-connected components, native/model-grid foreground fractions, padding and label transform roundtrip. Identical source pixel arrays are flagged within training only, not automatically removed. No across-split image duplicate check is claimed. Numerical CT ranges alone do not verify HU calibration, and disconnected annotations may be legitimate.
+
+Current implementation facts to evaluate: physical affine is discarded before tensor-only ToCanonical; native voxel-size crops are resized without common physical spacing; per-crop normalization estimates mean/std from values>0 before tighter zoom; augmentation currently flips three axes independently. None alone proves the cause of low Dice. Candidate changes are common physical orientation/spacing preserving thin targets, train-derived CT normalization, foreground/hard-background patch sampling and mild anatomy-aware spatial/intensity augmentation. [nnU-Net's CT normalization](https://github.com/MIC-DKFZ/nnUNet/blob/master/documentation/explanation_normalization.md) derives shared clipping/normalization statistics from training foreground. [MONAI transforms](https://monai.readthedocs.io/en/stable/transforms.html) support paired image/label spatial transforms and positive/negative crop sampling. Adopt parameter values only after training-only profiling; keep validation deterministic, test reserved, originals unchanged, and compare preprocessing first with a later augmentation ablation. This profiler does not implement or start that new training recipe.
+
 ## Export segmentation PNGs on DGX and download with scp
 
 Generate all visualizations on the server from the completed tiny training run and matching threshold audit:
