@@ -920,3 +920,11 @@ python -u scripts/audit_physical_roundtrip.py --run-dir outputs/private/sam_refi
 ```
 
 The command reports source geometry, existing-grid reconstruction and a fixed subvoxel phase diagnostic. Full results are saved under `outputs/private/roundtrip_audit/<timestamp>/summary.json`. It does not launch training or change the quality gate.
+
+The SAM preprocessing workflow now checks two shared grid-origin phases (original and +half voxel XYZ) at each spacing, selected on all training sides before validation. All quality checks remain required. After a preprocessing-only failure, pull the correction and start a new run:
+
+```bash
+cd ~/raid/Clara/fsdp-train && git pull --ff-only origin main && conda activate fsdp-med3d && RESUME=0 bash scripts/launch_sam_refine32_nohup.sh
+```
+
+The launcher creates a new timestamped run and log; the old failed run remains available. Successful preprocessing automatically continues to Turbo+CNN training, evaluation and export. Monitor `logs/sam_refine32/latest.log`. Do not resume a checkpoint created by an earlier source revision.

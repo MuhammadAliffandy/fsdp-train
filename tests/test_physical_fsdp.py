@@ -110,7 +110,7 @@ class PhysicalDataTests(unittest.TestCase):
             self.assertTrue(result['policy']['attempts'][1]['eligible'])
 
     def test_failed_training_preflight_never_prepares_validation(self):
-        samples = [{'metadata': {'target_retention': 1.}, 'roundtrip_dice': .8,
+        samples = [{'case': 'train_01', 'side': 'RFSDP', 'metadata': {'target_retention': 1.}, 'roundtrip_dice': .8,
                     'physical_margin_mm': [5.] * 3, 'valid': torch.ones((1, 1, 2, 2, 2), dtype=torch.bool),
                     'target': torch.ones((1, 1, 2, 2, 2), dtype=torch.uint8)}]
         policy = {'normalization': {}, 'candidates': [{'spacing': [.35] * 3, 'shape': [16] * 3}]}
@@ -123,6 +123,47 @@ class PhysicalDataTests(unittest.TestCase):
             self.assertEqual(prepare.call_count, 1)
             self.assertEqual(prepare.call_args.args[3], 'train')
             self.assertIsNone(physical.read(output / 'policy.json')['selected'])
+
+    def test_half_voxel_phase_avoids_thin_label_reconstruction_loss(self):
+        generator = np.random.default_rng(1)
+        mask = np.zeros((24, 24, 32), bool)
+        mask[8:15, 8:15, 10:21] = generator.random((7, 7, 11)) > .5
+        raw = np.zeros(mask.shape, np.float32)
+        meta = {'spacing': [.293, .293, .25], 'direction': np.eye(3).ravel().tolist(),
+                'size': list(mask.shape), 'origin': [0.] * 3}
+        image = physical.image_xyz(raw, meta)
+        norm = {'clip_lower': -1., 'clip_upper': 1., 'mean': 0., 'std': 1.}
+        plan = {'shape': [64, 64, 64], 'spacing': [.25] * 3}
+        original = physical.make_sample(image, raw, mask, 'train_26', 'RFSDP', plan, norm)
+        shifted = physical.make_sample(image, raw, mask, 'train_26', 'RFSDP',
+            {**plan, 'origin_shift_fraction_xyz': [.5] * 3}, norm)
+        self.assertLess(original['roundtrip_dice'], .95)
+        self.assertGreater(shifted['roundtrip_dice'], .99)
+        self.assertEqual(shifted['metadata']['target_retention'], 1.)
+        self.assertGreaterEqual(min(shifted['physical_margin_mm']), 5.)
+        np.testing.assert_allclose(np.asarray(shifted['grid']['origin']) - original['grid']['origin'], [.125] * 3)
+        np.testing.assert_array_equal(physical.xyz(image), raw)
+
+    def test_phase_is_shared_and_frozen_before_validation(self):
+        policy = {'normalization': {}, 'candidates': [{'spacing': [.25] * 3, 'shape': [96, 160, 208]}]}
+        calls = []
+        def prepare(manifest, source, prior, split, plan, norm):
+            phase = plan['origin_shift_fraction_xyz']
+            calls.append((split, phase))
+            quality = .91 if phase == [0.] * 3 else .99
+            samples = [{'case': 'train_26', 'side': side, 'metadata': {'target_retention': 1.},
+                        'physical_margin_mm': [5.1] * 3, 'roundtrip_dice': quality,
+                        'valid': torch.ones((1, 1, 2, 2, 2), dtype=torch.bool),
+                        'target': torch.ones((1, 1, 2, 2, 2), dtype=torch.uint8)} for side in ('RFSDP', 'LFSDP')]
+            return samples, {str(i): {} for i in range(54 if split == 'train' else 10)}, []
+        with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stdout(io.StringIO()), \
+             patch.object(physical, 'inspect_training', return_value=(policy, [])), \
+             patch.object(physical, 'prepare_split', prepare):
+            result = physical.prepare_dataset({}, Path(directory), {'train': [], 'val': []}, Path(directory) / 'new',
+                origin_phases=((0., 0., 0.), (.5, .5, .5)))
+        self.assertEqual(calls, [('train', [0.] * 3), ('train', [.5] * 3), ('val', [.5] * 3)])
+        self.assertEqual(result['policy']['selected']['origin_shift_fraction_xyz'], [.5] * 3)
+        self.assertEqual(len(result['policy']['attempts'][0]['failed_sides']), 2)
 
     def test_threshold_tie_policy_never_uses_validation(self):
         curves = {t: {'metrics': {'mean_bilateral_patient_dice': score}} for t, score in ((.3, .8), (.5, .8), (.7, .7))}

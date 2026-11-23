@@ -171,8 +171,10 @@ def make_sample(image, ct, mask, alias, side, plan, normalization):
     lo, hi = world_bounds(mask, source)
     center = (lo + hi) / 2
     shape, spacing = np.asarray(plan['shape']), np.asarray(plan['spacing'])
+    phase = np.asarray(plan.get('origin_shift_fraction_xyz', [0., 0., 0.]))
     grid = {'size': shape.tolist(), 'spacing': spacing.tolist(),
-            'origin': (center - (shape - 1) * spacing / 2).tolist(), 'direction': np.eye(3).ravel().tolist()}
+            'origin': (center - (shape - 1) * spacing / 2 + phase * spacing).tolist(),
+            'direction': np.eye(3).ravel().tolist()}
     binary = image_xyz(mask.astype(np.uint8), source)
     target = xyz(resample(binary, grid, sitk.sitkNearestNeighbor, pixel=sitk.sitkUInt8)).astype(bool)
     ones = sitk.Image(image.GetSize(), sitk.sitkUInt8) + 1
@@ -232,23 +234,37 @@ def coverage(samples):
             'mean_model_foreground_fraction': float(np.mean([s['target'].float().mean().item() for s in samples]))}
 
 
-def prepare_dataset(manifest, source_root, prior_sources, output):
+def prepare_dataset(manifest, source_root, prior_sources, output, origin_phases=None):
     output.mkdir()
     policy, inspected = inspect_training(manifest, source_root, prior_sources['train'])
+    if origin_phases is not None:
+        phases = np.asarray(origin_phases, dtype=float)
+        if phases.ndim != 2 or phases.shape[1] != 3 or not np.isfinite(phases).all():
+            raise ValueError('Origin phases must be finite XYZ fractions')
+        policy['candidates'] = [{**plan, 'origin_shift_fraction_xyz': phase.tolist()}
+                                for plan in policy['candidates'] for phase in phases]
+        policy['origin_phase_selection'] = 'One shared phase for every train/val side; first eligible spacing/phase on all54train; validation never selects phase'
     attempts = []
-    for plan in policy['candidates']:
+    for attempt_index, plan in enumerate(policy['candidates'], 1):
+        print(f'Physical grid candidate{attempt_index}: {json.dumps(plan)}', flush=True)
         samples, patients, provenance = prepare_split(manifest, source_root, prior_sources['train'], 'train', plan, policy['normalization'])
         measured = coverage(samples)
         eligible = (measured['minimum_target_retention'] == 1
                     and measured['minimum_roundtrip_dice'] >= ROUNDTRIP_GATE
                     and measured['minimum_target_margin_mm'] >= MARGIN_MM - 1e-5)
-        attempts.append({'plan': plan, 'eligible': eligible, **measured})
+        failures = [{'case': sample['case'], 'side': sample['side'],
+                     'target_retention': sample['metadata']['target_retention'],
+                     'minimum_margin_mm': min(sample['physical_margin_mm']),
+                     'roundtrip_dice': sample['roundtrip_dice']}
+                    for sample in samples if sample['metadata']['target_retention'] < 1
+                    or min(sample['physical_margin_mm']) < MARGIN_MM - 1e-5 or sample['roundtrip_dice'] < ROUNDTRIP_GATE]
+        attempts.append({'plan': plan, 'eligible': eligible, **measured, 'failed_sides': failures})
         save(output / 'policy.json', {**policy, 'attempts': attempts, 'selected': plan if eligible else None})
         if eligible:
             break
         del samples, patients
     else:
-        raise ValueError('No training-only physical grid preserves labels at minimum roundtrip Dice0.95; inspect policy.json')
+        raise ValueError('No training-only physical grid passes retention1, margin5mm and roundtrip Dice0.95; inspect policy.json attempts/failed_sides')
     if provenance != inspected:
         raise ValueError('Training sources changed during physical planning')
     policy.update(attempts=attempts, selected=plan)

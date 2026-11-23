@@ -75,7 +75,7 @@ def prepare(args):
     if file_hash(args.checkpoint) != TURBO_SHA256:
         raise ValueError('Original Turbo checkpoint checksum differs')
     requested = {key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items() if key != 'resume'}
-    requested.update(experiment='sam_turbo_cnn_refine32',
+    requested.update(experiment='sam_turbo_cnn_refine32', preprocessing_revision='global_origin_phase_v2',
         code_sha256={name: file_hash(Path(__file__).with_name(name)) for name in CODE_FILES},
         sam_source_sha256=views.source_hashes(args.sam_dir), turbo_sha256=TURBO_SHA256, versions=versions,
         control_sha256={name: file_hash(prior / name) for name in ('config.json', 'summary.json', 'source_provenance.json')},
@@ -103,7 +103,8 @@ def prepare(args):
     else:
         data.save(args.run_dir / 'requested_config.json', requested)
         sources = data.read(prior / 'source_provenance.json')
-        prepared = data.prepare_dataset(manifest, Path(old['source_root']).resolve(), sources, args.run_dir / 'preprocessing')
+        prepared = data.prepare_dataset(manifest, Path(old['source_root']).resolve(), sources, args.run_dir / 'preprocessing',
+            origin_phases=((0., 0., 0.), (.5, .5, .5)))
         prepared = views.add_contexts(prepared, manifest, Path(old['source_root']).resolve(), sources)
         data.save(args.run_dir / 'preprocessing' / 'policy.json', prepared['policy'])
         atomic_save(cache, prepared)
