@@ -704,7 +704,7 @@ python -m json.tool outputs/private/unet_audit/latest/threshold_overview.json
 
 The completed threshold audit found epoch200 at0.3 reaches87.71% mean bilateral training Dice,84.25% minimum side Dice and85.02% minimum patient Dice, with90.12% mean precision/85.44% mean recall. FP32 and AMP agree. The same weights at0.5 predict an empty native mask and score0. Epoch35 remains poor under the tested thresholds. This supports a calibration explanation for the latest checkpoint's zero hard Dice on these two patients, and demonstrates substantial held-in learning; it does not establish validation performance. The original minimum90% gate is still unmet. A proposed new tiny continuation would freeze0.3, start from the epoch200 latest weights, and test LR0.0001 for at most100 additional epochs with the same90% minimum target. It is pending approval/implementation; no existing gate or old artifact was changed.
 
-After reviewing a passed diagnostic, launch the cohort baseline:
+The original threshold0.5 cohort launcher below still requires a passed diagnostic. It is not the command for the newly authorized train-calibrated experiment in the next section:
 
 ```bash
 UNET_STAGE=cohort bash scripts/launch_private_unet_nohup.sh
@@ -725,6 +725,43 @@ Overrides: `GPU_ID`, `PRIVATE_SOURCE_ROOT`, `PRIVATE_DATA_DIR`, `PRIVATE_V4_RUN_
 ```bash
 RESUME=1 UNET_STAGE=tiny UNET_RUN_NAME=fsdp_private_unet_tiny_YOUR_RUN_NAME bash scripts/launch_private_unet_nohup.sh
 ```
+
+## Full-cohort 3D U-Net with the train-calibrated threshold
+
+The user authorized cohort training after reviewing the tiny threshold audit and visualizations. This is an explicit exploratory protocol despite the original minimum90% tiny gate remaining unmet. No previous summary, diagnostic gate, checkpoint or source dataset is changed. The two-patient87.71% training Dice is not a prediction of cohort validation performance.
+
+Run on DGX:
+
+```bash
+cd ~/raid/Clara/fsdp-train
+git pull --ff-only origin main
+conda activate fsdp-med3d
+bash scripts/launch_unet_cohort_nohup.sh
+tail -f logs/unet_cohort/latest.log
+```
+
+This separate launcher uses `train_unet_cohort.py`:54 train patients/108 side ROIs,10 validation patients/20 side ROIs,20 test patients reserved. It verifies the completed tiny run, matching train-only threshold audit, checkpoint hashes, frozen v4 package versions/ROI policy, manifest, source CT/final-label fingerprints and original random initialization. Default inputs are `outputs/private/zoom_training/latest`, `outputs/private/unet_tiny/latest`, and `outputs/private/unet_audit/latest`; set `PRIVATE_V4_RUN_DIR`, `UNET_TINY_RUN_DIR`, and `UNET_AUDIT_DIR` to their original run directories if these links move. Old training/audit/visual code stays unchanged so previous fingerprinted workflows remain usable.
+
+Threshold0.3 is frozen from the latest tiny checkpoint's train-only audit **before validation image preparation**. If the matching audit selects a different threshold, the launcher refuses this protocol. The cohort starts from fresh seeded random U-Net weights; tiny/SAM learned weights are never loaded. Settings: AdamW LR0.001/weight decay0.0001, unchanged squared DiceCE, XYZ flips, accumulation8 with a four-ROI tail (14 attempted updates/epoch),5-epoch warmup/cosine, maximum200 epochs, validation every5 epochs plus first/final, early-stop patience50 epochs/min_delta0.001. These are an initial experiment recipe, not an estimated optimum or an80% validation guarantee.
+
+Checkpoint selection uses equal-patient native bilateral full-target validation Dice at fixed0.3. Native metrics at0.5 are reported from the same logits as a control and never select checkpoints or thresholds. Moving augmented model-grid training Dice remains explicitly labeled `moving_model_grid_train_dice_at_0_5`; compare final frozen train/validation scores at0.3 for the generalization gap. The v4 GT-side-centered ROI and128³ model input remain fixed; logits are restored before thresholding. This is assisted segmentation validation, not automatic full-scan localization or test performance.
+
+Monitor or inspect completion:
+
+```bash
+python -m json.tool outputs/private/unet_cohort/latest/progress.json
+python -m json.tool outputs/private/unet_cohort/latest/summary.json
+```
+
+`summary.json` exists only after selected-checkpoint verification and exports finish. It contains `best_validation_metrics`, `best_frozen_training_metrics`, train/validation gap, coverage, original failed tiny status, threshold provenance,0.5 controls and checkpoint SHA256. `best_exports` contains side/patient CSVs, frozen-training CSVs and worst/middle/best validation overlays/NIfTI crops. All outputs are ignored by git. Logs are isolated under `logs/unet_cohort`; reports link from `outputs/private/unet_cohort/latest`; checkpoints are `runs/<run>/unet_best.pth` and `unet_latest.pth`. Latest is saved every epoch.
+
+`GPU_ID`, `NUM_EPOCHS`, `VAL_EVERY`, `LEARNING_RATE`, `ACCUMULATION_STEPS`, `PATIENCE_EPOCHS`, `MIN_DELTA`, `PRIVATE_SOURCE_ROOT`, and `PRIVATE_DATA_DIR` are supported. Use the same settings and resolved control/calibration directories when resuming an unfinished run:
+
+```bash
+RESUME=1 UNET_RUN_NAME=fsdp_private_unet_cohort_YOUR_ORIGINAL_RUN bash scripts/launch_unet_cohort_nohup.sh
+```
+
+Strict resume verifies code/config/source/calibration, restores model/optimizer/scheduler/scaler/RNG/history and refuses completed runs. An error writes isolated `failure.json` and a traceback in the log. This workspace does not have DGX access; actual cohort launch/results must be confirmed on the server.
 
 ## Export segmentation PNGs on DGX and download with scp
 
