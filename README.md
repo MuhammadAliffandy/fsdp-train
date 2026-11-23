@@ -763,6 +763,50 @@ RESUME=1 UNET_RUN_NAME=fsdp_private_unet_cohort_YOUR_ORIGINAL_RUN bash scripts/l
 
 Strict resume verifies code/config/source/calibration, restores model/optimizer/scheduler/scaler/RNG/history and refuses completed runs. An error writes isolated `failure.json` and a traceback in the log. This workspace does not have DGX access; actual cohort launch/results must be confirmed on the server.
 
+## Physical preprocessing followed directly by U-Net retraining
+
+The user authorized preprocessing and a new full-cohort run after the training audit. Use this separate launcher on DGX:
+
+```bash
+cd ~/raid/Clara/fsdp-train
+git pull --ff-only origin main
+conda activate fsdp-med3d
+bash scripts/launch_unet_physical_nohup.sh
+tail -f logs/unet_physical/latest.log
+```
+
+One nohup process performs the training-only physical planning, preprocessing checks, validation preparation and then training automatically. Initial log lines describe source checks and resampling; epoch lines appear after preflight. Original CTs/annotations, prior checkpoints and previous scripts are unchanged.54train/10validation patients remain fixed;20test images are never read. This is still a GT-assisted side ROI protocol, not automatic full-scan localization.
+
+`physical_fsdp.py` uses original SimpleITK spatial metadata to resample CT/label together onto an axis-aligned physical LPS reference. It supports the LIP case and oblique source directions; no tensor-only orientation assumption is used. Each side's physical target bounding box defines its center. ROI field-of-view/normalization/grid selection use all54train patients only and are frozen before any validation image preparation. The starting field is at least22.4×39.2×50.4mm, expanded if actual training world-space bounds require it, with at least5mm margin. Dimensions round up to multiples of16 for the residual U-Net. Initial spacing0.35mm typically gives64×112×144 input. No anisotropic cuboid-to128cube stretch is applied.
+
+Before training, every training side must retain its target, have at least5mm physical margin and reach minimum label-resampling roundtrip Dice0.95. If0.35mm fails, the prespecified training-only candidates0.30/0.25mm are tried with suitably larger tensor dimensions; if none pass, processing stops with `failure.json` and `preprocessing/policy.json`. No case is removed or annotation rewritten. This diagnostic is not a model Dice ceiling. Upsampling cannot recover unacquired thin-slice detail. Validation never refits the grid/normalization: all10patients are included, native full targets remain in the denominator, and truncation/roundtrip statistics are reported without excluding difficult cases.
+
+Normalization clips raw CT values to training-FSDP foreground percentiles0.5/99.5 then uses shared training mean/std. It does not assume positive CT values are the foreground or recalibrate scanner HU metadata. Interpolation is linear for CT/logits, nearest neighbor for masks. Outside-CT padding is explicitly marked and excluded from DiceCE loss. Resampled logits are mapped back through physical coordinates to the original CT grid before thresholding; side predictions are unioned without duplicate voxels for patient-macro bilateral scoring.
+
+Default augmentation is mild and paired: affine probability0.5 with rotations±5°, scaling±5%, translation±1mm; LR flip probability0.5 (no AP/IS flips); normalized intensity gain0.9–1.1/shift±0.1 at probability0.3; Gaussian noise sigma0.02 at probability0.15. A spatial transform producing empty or border-touching targets falls back to its untransformed pair. CT/target/validity share the transform, and padding stays excluded. Set `AUGMENTATION=none` for a future separately named control; the first requested pipeline uses `light`.
+
+Training starts from fresh seeded U-Net weights matching the previous architecture/initial-state hash. No tiny/SAM learned weights are loaded. Defaults: AdamW LR0.001/decay0.0001, squared DiceCE in FP32 over valid CT voxels, accumulation8 including the four-ROI tail (14attempted updates/epoch), gradient clipping1, five-epoch warmup/cosine, cap200epochs, evaluation every5 plus first/final, early-stop patience50epochs/min_delta0.001. Preprocessing, padding loss, augmentation and threshold protocol change together: compare pipelines without claiming a one-variable causal ablation or guaranteed80% validation.
+
+Thresholds are reassessed on the changed inputs. At each evaluation, the model first runs frozen/no-augmentation inference on **all54training patients** and selects from prespecified native-logit probability thresholds0.05–0.95 by mean training bilateral Dice (ties prefer0.5 proximity, then lower threshold). That threshold is fixed for the subsequent validation call and saved with the checkpoint. Validation never chooses thresholds. The old0.3 and conventional0.5 remain secondary same-logit validation controls; they do not independently select checkpoints. Native validation Dice at the train-chosen threshold selects the best checkpoint and early stopping. Moving augmented model-grid training Dice at0.5 is labeled separately.
+
+Monitor and inspect completion:
+
+```bash
+python -m json.tool outputs/private/unet_physical/latest/preprocessing/summary.json
+python -m json.tool outputs/private/unet_physical/latest/progress.json
+python -m json.tool outputs/private/unet_physical/latest/summary.json
+```
+
+The preprocessing summary exists after train/validation preparation. The final summary exists only after best-checkpoint/threshold reproduction and exports. It includes selected grid/normalization, coverage/roundtrip/padding, threshold source, frozen train/validation metrics, gap, prior-cohort comparison and hashes. `best_exports` contains full side/patient CSVs for selected validation and frozen training, the train-only threshold curve, and score-verified native PNG/NIfTI overlays for worst/middle/best validation patients. Original geometry, native slice indices and actual selected threshold are retained in exports.
+
+New output paths: `logs/unet_physical/latest.log`, `outputs/private/unet_physical/latest`, and `runs/fsdp_private_unet_physical_<timestamp>/`. `physical_data.pt` caches private preprocessed crops/metadata and is ignored by git. Strict resume verifies cache/source image/label/ColorTable hashes, code/package/Monai implementation, control/config/settings, and restores model/optimizer/scheduler/scaler/RNG/history. Keep the same resolved control and original settings:
+
+```bash
+RESUME=1 UNET_RUN_NAME=fsdp_private_unet_physical_YOUR_ORIGINAL_RUN bash scripts/launch_unet_physical_nohup.sh
+```
+
+Overrides: `UNET_COHORT_RUN_DIR` (default prior `outputs/private/unet_cohort/latest`), `GPU_ID`, `NUM_EPOCHS`, `VAL_EVERY`, `LEARNING_RATE`, `ACCUMULATION_STEPS`, `PATIENCE_EPOCHS`, `MIN_DELTA`, `AUGMENTATION`, `PREPROCESS_THREADS` (default4), `OMP_NUM_THREADS` (default4). Seed must match the frozen prior cohort. Completed runs cannot be resumed or overwritten. This workspace has no DGX connection; launch the command above on the server to obtain actual results.
+
 ## Profile the training dataset before changing preprocessing/augmentation
 
 The actual cohort completed115/200 epochs with early stopping, selecting epoch65. At the frozen threshold0.3 its training/validation mean bilateral Dice is32.50%/18.64%; the0.5 control is empty on both splits. Tiny87.71% remains historical held-in calibration. Full target retention does not establish clinical annotation correctness, physical scale consistency or normalization suitability.
