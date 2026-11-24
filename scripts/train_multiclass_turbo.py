@@ -15,7 +15,7 @@ from torch.nn import functional as F
 
 import multiclass_data as data
 import physical_fsdp as physical
-from multiclass_model import MulticlassTurbo, load_encoder, segmentation_loss, set_stage
+from multiclass_model import MulticlassTurbo, configure_encoder_grid, load_encoder, segmentation_loss, set_stage
 from evaluate_private_validation import file_hash, write_csv, save_crop
 from sam_refine_data import source_hashes
 from sam_refine32 import TURBO_SHA256
@@ -61,7 +61,9 @@ def control(args):
         code_sha256={key: file_hash(Path(__file__).with_name(key)) for key in CODE},
         sam_source_sha256=source_hashes(args.sam_dir), manifest_sha256=file_hash(manifest_path),
         control_sha256={key: file_hash(args.cohort_run_dir / key) for key in ('summary.json', 'config.json', 'source_provenance.json')},
-        output_classes=18, detail_comparison='same weights/seed/input field/128cube patch/loss/schedule; learned local fusion64versus32; not global Transformer tokens',
+        output_classes=18, detail_comparison='same adapted initialization/seed/physical field/local128cube/loss/schedule across requested CNN grids; encoder grid held fixed within run',
+        encoder_adaptation='strict original Turbo load, then absolute position trilinear8to16 if requested; original patch kernel/attention/relative tables preserved; upstream relative positions resized at runtime; nonreentrant block checkpointing for16tokens',
+        context_size=args.encoder_grid * 16,
         initialization='strict full Turbo load before extracting image encoder; new multiclass CNN decoder random, no SAM prompt/mask decoder used',
         selection='validation patient-macro mean Dice across evaluable foreground labels; empty/empty excluded, absent-GT false positives score0',
         protocol='GT-all17-union-centered broad field; physical LPS spacing/phase selected only on train; overlapping128cube local patches; whole-field softmax argmax; native-grid all-class evaluation',
@@ -113,7 +115,7 @@ def confusion_metrics(confusion, mapping, case):
 
 @torch.inference_mode()
 def infer_case(model, case, device, stride=96):
-    context = data.case_context(case, device)
+    context = data.case_context(case, device, getattr(model, 'context_size', 128))
     with amp(model, device):
         embedding = model.encode(context)
     shape = tuple(case['target'].shape)
@@ -216,7 +218,7 @@ def preflight(model, case, device, spacing, output):
     model.train()
     set_stage(model, 0, 5)
     with amp(model, device):
-        logits, shapes = model(patch.to(device), data.case_context(case, device), start, case['target'].shape, True)
+        logits, shapes = model(patch.to(device), data.case_context(case, device, getattr(model, 'context_size', 128)), start, case['target'].shape, True)
     loss = segmentation_loss(logits, target.to(device), valid.to(device))
     loss.backward()
     grad = model.classifier.weight.grad
@@ -227,7 +229,7 @@ def preflight(model, case, device, spacing, output):
     model.zero_grad(set_to_none=True)
     set_stage(model, 5, 5)
     with amp(model, device):
-        logits = model(patch.to(device), data.case_context(case, device), start, case['target'].shape)
+        logits = model(patch.to(device), data.case_context(case, device, getattr(model, 'context_size', 128)), start, case['target'].shape)
     loss = segmentation_loss(logits, target.to(device), valid.to(device))
     loss.backward()
     probes = {}
@@ -244,7 +246,11 @@ def preflight(model, case, device, spacing, output):
             'occupied_detail_cells_maxpool': int((F.adaptive_max_pool3d(mask, model.detail_grid) > 0).sum())})
     physical.save(output / 'preflight.json', {'passed': True, 'label_occupancy_probe': occupancy, 'feature_shapes': shapes,
         'detail_cell_mm_xyz': [float(s * 128 / model.detail_grid) for s in spacing],
-        'encoder_token_grid': [8] * 3, 'gradient_l2': probes, 'optimizer_updates': 0,
+        'encoder_token_grid': [getattr(model, 'encoder_grid', 8)] * 3,
+        'context_shape': [getattr(model, 'context_size', 128)] * 3,
+        'context_sampling': 'direct from physical field; no intermediate128cube; same physical field',
+        'encoder_token_mm_xyz': [float(n * s / getattr(model, 'encoder_grid', 8)) for n, s in zip(case['target'].shape, spacing)],
+        'gradient_l2': probes, 'optimizer_updates': 0,
         'gpu_peak_allocated_gib': torch.cuda.max_memory_allocated(device) / 2**30 if device.type == 'cuda' else None})
 
 
@@ -261,7 +267,7 @@ def train_epoch(model, prepared, optimizer, scaler, device, epoch, args):
         sample_seed = args.seed + epoch * 100000 + int(case['case'].split('_')[-1]) * 10 + k
         start = data.choose_start(case, sample_seed)
         patch, target, valid = data.local_patch(case, start)
-        context = data.case_context(case, device)
+        context = data.case_context(case, device, getattr(model, 'context_size', 128))
         patch = patch.to(device)
         aug = np.random.default_rng(sample_seed)
         if aug.random() < .3:
@@ -269,7 +275,7 @@ def train_epoch(model, prepared, optimizer, scaler, device, epoch, args):
             patch, context = patch * gain + shift, context * gain + shift
             patch.masked_fill_(~valid[:, None].to(device), 0)
         # Context padding must remain zero after the shared intensity transform.
-        context_valid = F.interpolate(case['valid'][None, None].float(), size=(128,) * 3, mode='nearest').to(device).bool()
+        context_valid = F.interpolate(case['valid'][None, None].float(), size=context.shape[-3:], mode='nearest').to(device).bool()
         context.masked_fill_(~context_valid, 0)
         if aug.random() < .15:
             noise_rng = torch.Generator(device=device).manual_seed(sample_seed + 1)
@@ -339,7 +345,13 @@ def variant(args, prepared, config, grid):
     device = torch.device(args.device)
     seed_all(args.seed)
     encoder, original_hash = load_encoder(args.sam_dir, args.checkpoint)
+    token_grid = getattr(args, 'encoder_grid', 8)
+    configure_encoder_grid(encoder, token_grid)
+    adapted_hash = state_hash(encoder.state_dict())
     model = MulticlassTurbo(encoder, grid).to(device)
+    model.encoder_grid, model.context_size = token_grid, token_grid * 16
+    if device.type == 'cuda':
+        torch.cuda.reset_peak_memory_stats(device)
     model.amp_dtype = torch.bfloat16 if args.precision == 'bf16' else torch.float16
     initial_hash = state_hash(model.state_dict())
     optimizer = torch.optim.AdamW([
@@ -419,7 +431,9 @@ def variant(args, prepared, config, grid):
     summary = {'complete': True, 'detail_grid': grid, 'completed_epochs': history[-1]['epoch'], 'planned_epochs': args.epochs,
         'stopped_early': stopped, 'best_epoch': best_epoch, 'best_validation_metrics': evaluation['metrics'],
         'best_validation_per_class': evaluation['classes'], 'frozen_train_metrics': training['metrics'],
-        'initial_encoder_sha256': original_hash, 'initial_state_sha256': initial_hash,
+        'initial_encoder_sha256': original_hash, 'adapted_encoder_sha256': adapted_hash,
+        'encoder_token_grid': token_grid, 'context_size': model.context_size,
+        'initial_state_sha256': initial_hash,
         'best_checkpoint_sha256': file_hash(output / 'model_best.pth'), 'test_images_read': False,
         'validation_images_read': True, 'oracle_clicks': 0, 'protocol': config['protocol'],
         'macro_gap': training['metrics']['mean_patient_macro_dice'] - best,
@@ -445,6 +459,7 @@ def execute(args):
     if len({r['initial_state_sha256'] for r in summaries}) != 1:
         raise ValueError('Resolution comparison did not share initial weights')
     report = {'complete': True, 'experiment': config['experiment'], 'comparison': summaries,
+              'encoder_token_grid': getattr(args, 'encoder_grid', 8),
               'train_patients': 54, 'validation_patients': 10, 'reserved_test_patients': 20,
               'test_images_read': False, 'oracle_clicks': 0, 'protocol': config['protocol'],
               'preprocessing_coverage': {split: {'minimum_roundtrip_dice': min(r['roundtrip_dice'] for r in rows if r['roundtrip_dice'] is not None),
@@ -470,6 +485,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for key in ('sam-dir', 'checkpoint', 'cohort-run-dir', 'run-dir'):
         parser.add_argument('--' + key, type=Path, required=True)
+    parser.add_argument('--encoder-grid', type=int, choices=(8, 16), default=8)
     parser.add_argument('--detail-grids', type=int, nargs='+', default=[64, 32])
     parser.add_argument('--epochs', type=int, default=200)
     parser.add_argument('--head-warmup-epochs', type=int, default=5)

@@ -1,11 +1,13 @@
 """Turbo image encoder with local CNN detail at 32³ or 64³ and 18-class logits."""
 import importlib
 import sys
+from types import MethodType
 from pathlib import Path
 
 import torch
 from torch import nn
 from torch.nn import functional as F
+from torch.utils.checkpoint import checkpoint
 
 from evaluate_private_validation import file_hash
 from sam_refine32 import TURBO_SHA256, block
@@ -26,6 +28,44 @@ def load_encoder(sam_dir, checkpoint):
     if tuple(encoder.pos_embed.shape) != (1, 8, 8, 8, 768):
         raise ValueError('Expected original Turbo image encoder')
     return encoder, state_hash(encoder.state_dict())
+
+
+def _higher_resolution_forward(self, image):
+    if tuple(image.shape[-3:]) != (256,) * 3:
+        raise ValueError('16-cube tokens require a directly sampled256-cube context')
+    features = self.patch_embed(image)
+    if tuple(features.shape[1:4]) != (16,) * 3:
+        raise ValueError('Expected16-cube patch tokens before position encoding')
+    features = features + self.pos_embed
+    for layer in self.blocks:
+        needs_grad = features.requires_grad or any(p.requires_grad for p in layer.parameters())
+        if torch.is_grad_enabled() and needs_grad:
+            features = checkpoint(layer, features, use_reentrant=False)
+        else:
+            features = layer(features)
+    return self.neck(features.permute(0, 4, 1, 2, 3))
+
+
+def configure_encoder_grid(encoder, grid):
+    """Adapt absolute positions after strict Turbo loading; retain patch/attention weights."""
+    if grid == 8:
+        return
+    if grid != 16 or tuple(encoder.pos_embed.shape[1:4]) != (8,) * 3:
+        raise ValueError('Encoder adaptation supports original8-cube to16-cube only')
+    projection = encoder.patch_embed.proj
+    if projection.kernel_size != (16,) * 3 or projection.stride != (16,) * 3:
+        raise ValueError('Expected original16-cube patch kernel and stride')
+    for layer in encoder.blocks:
+        if not layer.attn.use_rel_pos:
+            raise ValueError('Expected Turbo relative positions with upstream runtime resizing')
+    with torch.no_grad():
+        position = F.interpolate(encoder.pos_embed.permute(0, 4, 1, 2, 3).float(),
+                                 size=(16,) * 3, mode='trilinear', align_corners=False)
+    encoder.pos_embed = nn.Parameter(position.permute(0, 2, 3, 4, 1).contiguous())
+    encoder.img_size = 256
+    # Upstream get_rel_pos interpolates relative tables to each attention grid.
+    # Keep original table parameters, global layers and window sizes unchanged.
+    encoder.forward = MethodType(_higher_resolution_forward, encoder)
 
 
 def spatial_crop(feature, offset, shape, output_size):
@@ -55,8 +95,11 @@ class MulticlassTurbo(nn.Module):
 
     def encode(self, context):
         result = self.image_encoder(context)
-        if tuple(result.shape[-3:]) != (8,) * 3:
-            raise ValueError('Turbo embedding must remain8³')
+        grid = getattr(self, 'encoder_grid', 8)
+        if tuple(context.shape[-3:]) != (getattr(self, 'context_size', 128),) * 3:
+            raise ValueError('Context size differs from configured encoder')
+        if tuple(result.shape[-3:]) != (grid,) * 3:
+            raise ValueError('Turbo embedding differs from configured token grid')
         return self.projection(result)
 
     def decode(self, image, embedding, offset, shape, return_shapes=False):

@@ -275,6 +275,15 @@ class LauncherTests(unittest.TestCase):
             self.assertIn('--detail-grids\n64\n32\n', (root / 'args').read_text())
             self.assertTrue((root / 'logs/multiclass/latest.log').is_file())
             self.assertEqual(checkpoint.read_text(), 'synthetic')
+            wrapper = scripts / 'launch_multiclass_tokens16_nohup.sh'
+            shutil.copyfile(Path(__file__).resolve().parents[1] / 'scripts' / wrapper.name, wrapper)
+            env['MULTICLASS_RUN_NAME'] = 'fsdp_multiclass_tokens16_test'
+            result = subprocess.run(['bash', str(wrapper)], env=env, capture_output=True, text=True, timeout=15)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('simulated-child-failure', result.stderr)
+            self.assertIn('--encoder-grid\n16\n--detail-grids\n64\n--epochs', (root / 'args').read_text())
+            self.assertTrue((root / 'logs/multiclass_tokens16/latest.log').is_file())
+            self.assertTrue((root / 'logs/multiclass/latest.log').is_file())
 
 
 if __name__ == '__main__':

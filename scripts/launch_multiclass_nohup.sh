@@ -8,15 +8,17 @@ CONTROL="${UNET_COHORT_RUN_DIR:-$PROJECT_DIR/outputs/private/unet_cohort/latest}
 NAME="${MULTICLASS_RUN_NAME:-fsdp_multiclass_$(date -u +%Y%m%dT%H%M%SZ)_$$}"
 if [[ ! "$NAME" =~ ^fsdp_multiclass_[A-Za-z0-9._-]+$ ]]; then echo "Invalid MULTICLASS_RUN_NAME." >&2; exit 2; fi
 RUN="$PROJECT_DIR/runs/$NAME"
-LOG="$PROJECT_DIR/logs/multiclass"
-REPORT="$PROJECT_DIR/outputs/private/multiclass"
+CHANNEL="${MULTICLASS_CHANNEL:-multiclass}"
+if [[ ! "$CHANNEL" =~ ^multiclass(_tokens16)?$ ]]; then echo "Invalid log channel." >&2; exit 2; fi
+LOG="$PROJECT_DIR/logs/$CHANNEL"
+REPORT="$PROJECT_DIR/outputs/private/$CHANNEL"
 for FILE in "$SAM/segment_anything/build_sam3D.py" "$CHECKPOINT" "$CONTROL/config.json" "$CONTROL/summary.json" "$CONTROL/source_provenance.json"; do
   if [[ ! -f "$FILE" ]]; then echo "Required source/checkpoint/control missing: $FILE" >&2; exit 1; fi
 done
 read -r -a GRIDS <<< "${DETAIL_GRIDS:-64 32}"
 COMMAND=(python -u "$PROJECT_DIR/scripts/train_multiclass_turbo.py"
   --sam-dir "$SAM" --checkpoint "$CHECKPOINT" --cohort-run-dir "$CONTROL" --run-dir "$RUN"
-  --detail-grids "${GRIDS[@]}" --epochs "${NUM_EPOCHS:-200}" --val-every "${VAL_EVERY:-10}"
+  --encoder-grid "${ENCODER_GRID:-8}" --detail-grids "${GRIDS[@]}" --epochs "${NUM_EPOCHS:-200}" --val-every "${VAL_EVERY:-10}"
   --patches-per-patient "${PATCHES_PER_PATIENT:-4}" --accumulation "${ACCUMULATION_STEPS:-4}"
   --head-warmup-epochs "${HEAD_WARMUP_EPOCHS:-5}" --encoder-lr "${ENCODER_LEARNING_RATE:-0.00001}"
   --head-lr "${HEAD_LEARNING_RATE:-0.0001}" --patience-epochs "${PATIENCE_EPOCHS:-50}"
@@ -50,10 +52,10 @@ sleep 2
 if ! kill -0 "$PID" 2>/dev/null; then
   if wait "$PID"; then echo "Workflow finished during startup."; else tail -80 "$LOG_FILE" >&2; exit 1; fi
 else
-  echo "All-structure workflow launched: PID $PID; GPU $CUDA_VISIBLE_DEVICES; learned detail grids ${GRIDS[*]}"
+  echo "All-structure workflow launched: PID $PID; GPU $CUDA_VISIBLE_DEVICES; encoder grid ${ENCODER_GRID:-8}; learned detail grids ${GRIDS[*]}"
 fi
 echo "GT-all-class field; original Turbo image encoder;18class output; no clicks;20test untouched."
 echo "Log: $LOG/latest.log"
 echo "Progress: $REPORT/latest/progress.json"
 echo "Final summary: $REPORT/latest/summary.json"
-echo "Archive after both experiments: $REPORT/latest/results.tar.gz"
+echo "Archive after requested experiments: $REPORT/latest/results.tar.gz"

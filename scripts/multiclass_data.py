@@ -203,8 +203,11 @@ def prepare(manifest, root, sources, output):
     return result
 
 
-def case_context(case, device):
-    return F.interpolate(case['image'].float(), size=(128,) * 3, mode='trilinear', align_corners=False).to(device)
+def case_context(case, device, size=128):
+    if size not in (128, 256):
+        raise ValueError('Context size must be128or256')
+    # Sample the same physical field directly, without an intermediate128-cube.
+    return F.interpolate(case['image'].float(), size=(size,) * 3, mode='trilinear', align_corners=False).to(device)
 
 
 def local_patch(case, start, size=128):

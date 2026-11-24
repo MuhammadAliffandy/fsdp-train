@@ -966,3 +966,32 @@ scp 'D13K48009@DGXH100:~/raid/Clara/fsdp-train/outputs/private/multiclass/latest
 ```
 
 The bundle includes validation masks/overlays, per-class and per-patient CSVs, curves and confusion matrices. Preserve it as private research data.
+
+## CNN64 with Turbo encoder16³
+
+The encoder16 experiment keeps the same GT-all-class physical field and local128³CNN patches with64³learned detail. Its context is sampled directly from the physical field at256³, producing16³real patch tokens with the original16³kernel/stride. There is no intermediate128³context upsampling. Sampling at256³cannot recover details already absent from the physical source grid.
+
+The original Turbo checkpoint is checksum-verified and loaded strictly before adaptation. Absolute positions are interpolated8³to16³. Patch, attention and relative-position table weights are retained; the official encoder resizes relative positions during attention. Original window/global attention layers remain. The new semantic CNN decoder is randomly initialized. Decoder warmup and later block10/11fine-tuning follow the same recipe as the8³baseline. Nonreentrant block checkpointing reduces saved activations; it does not remove the higher peak cost of attention itself. GPU preflight checks actual feature sizes, gradient flow and peak allocated memory before training. Full Turbo16³has not been profiled locally on a DGX GPU.
+
+Launch a new run on DGX:
+
+```bash
+cd ~/raid/Clara/fsdp-train && git pull --ff-only origin main && conda activate fsdp-med3d && bash scripts/launch_multiclass_tokens16_nohup.sh
+```
+
+This runs only CNN64/encoder16, with a200epoch cap, early stopping, evaluation, native-grid masks/overlays and archive export. It uses separate log/report links:
+
+```bash
+tail -n 80 -f logs/multiclass_tokens16/latest.log
+python -m json.tool outputs/private/multiclass_tokens16/latest/detail64/preflight.json
+python -m json.tool outputs/private/multiclass_tokens16/latest/progress.json
+python -m json.tool outputs/private/multiclass_tokens16/latest/summary.json
+```
+
+Use `GPU_ID=1 bash scripts/launch_multiclass_tokens16_nohup.sh` to select another GPU if the baseline is still using GPU0. Separate channels do not prevent cross-workflow GPU contention. Existing jobs are not stopped by the launcher. This source revision changes resume hashes: start a new experiment; do not resume an older revision. Resume this revision using the original name and settings:
+
+```bash
+RESUME=1 MULTICLASS_RUN_NAME=fsdp_multiclass_tokens16_ORIGINAL_NAME bash scripts/launch_multiclass_tokens16_nohup.sh
+```
+
+Compare the final16³run with CNN64/encoder8³using identical split, seed, physical preprocessing and training settings. Record all adaptation/context changes with the scores; macro17Dice and FSDP1/9Dice remain separate. The20test images remain unread. GPU memory suitability, runtime and validation improvement require DGX measurements.
