@@ -8,6 +8,7 @@ import signal
 import subprocess
 import sys
 import tarfile
+import time
 
 import physical_fsdp as data
 from evaluate_private_validation import file_hash
@@ -17,6 +18,7 @@ from train_fsdp_foundation import inspect_foundation
 
 
 def run_child(command, record):
+    started = time.monotonic()
     child = subprocess.Popen(command)
     data.save(record, {'pid': child.pid, 'command': command})
     def forward(signum, frame):
@@ -29,10 +31,24 @@ def run_child(command, record):
         raise SystemExit(128 + signum)
     previous = {sig: signal.signal(sig, forward) for sig in (signal.SIGTERM, signal.SIGINT)}
     try:
-        return child.wait()
+        status = child.wait()
+        data.save(record, {'pid': child.pid, 'command': command, **exit_details(status),
+                           'elapsed_seconds': time.monotonic() - started})
+        return status
     finally:
         for sig, handler in previous.items():
             signal.signal(sig, handler)
+
+
+def exit_details(status):
+    number = -status if status < 0 else None
+    try:
+        name = signal.Signals(number).name if number else None
+    except ValueError:
+        name = f'SIGNAL_{number}'
+    return {'returncode': status, 'signal_number': number, 'signal_name': name,
+            'interpretation': ('Terminated by SIGKILL; OOM is possible but requires kernel/cgroup evidence.'
+                               if name == 'SIGKILL' else 'Child process exit status; inspect its traceback or system logs.')}
 
 
 def execute(args):
@@ -74,8 +90,14 @@ def execute(args):
                 command.append('--resume')
             print(f'Starting research: {variant}; outputs={child}', flush=True)
             status = run_child(command, args.run_dir / 'active_child.json')
+            child.mkdir(parents=True, exist_ok=True)
+            termination = {**exit_details(status), 'variant': variant,
+                           'child_failure_present': (child / 'failure.json').exists()}
+            data.save(child / 'process_exit.json', termination)
             if status != 0 or not (child / 'summary.json').exists():
-                raise ValueError(f'Research arm{variant}failed; no subsequent arm launched; inspect{child}/failure.json')
+                detail = f'returncode={status}; signal={termination["signal_name"]}'
+                raise ValueError(f'Research arm {variant} failed ({detail}); no subsequent arm launched; '
+                                 f'inspect {child}/process_exit.json and child failure.json if present')
             summary = data.read(child / 'summary.json')
             if not summary['complete'] or summary['test_images_read'] or summary['variant'] != variant:
                 raise ValueError('Research child summary incomplete or inconsistent')

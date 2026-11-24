@@ -1206,3 +1206,9 @@ Inspect all capacity without launching a job:
 ```bash
 python scripts/fsdp_research_gpu.py --list
 ```
+
+### Research child stops without a traceback
+
+The parent records each completed child process's return code and terminating signal in `<arm>/process_exit.json` and updates `active_child.json` with its PID, command and elapsed time. A negative subprocess return code denotes a signal; for example, `-9` means SIGKILL. SIGKILL alone does not prove an OOM kill: check kernel or cgroup evidence for that PID. An uncatchable signal cannot create the child's Python `failure.json`, so the parent reports the exit record even when that file is absent. Subsequent arms remain stopped on failure.
+
+Runs launched before this exit-record change did not save the return code. For those runs, preserve `active_child.json` and inspect the server's kernel logs around the failure time. Do not infer model quality, label failure or a VRAM shortage from a missing traceback. A changed workflow source requires a new workflow directory under the existing strict resume checks.

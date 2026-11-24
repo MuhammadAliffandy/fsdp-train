@@ -43,6 +43,30 @@ def completed_child(command, record):
 
 
 class ResearchWorkflowTests(unittest.TestCase):
+    def test_sigkill_without_child_failure_is_recorded_and_does_not_launch_later_arms(self):
+        with tempfile.TemporaryDirectory() as folder, contextlib.redirect_stdout(io.StringIO()):
+            args = arguments(Path(folder)); args.run_dir.mkdir()
+            with patch.object(workflow, 'inspect_foundation'), \
+                 patch.object(workflow, 'run_child', return_value=-signal.SIGKILL) as child:
+                with self.assertRaisesRegex(ValueError, 'returncode=-9; signal=SIGKILL'):
+                    workflow.execute(args)
+            child.assert_called_once()
+            details = data.read(args.run_dir / 'control/process_exit.json')
+            self.assertEqual(details['signal_name'], 'SIGKILL')
+            self.assertFalse(details['child_failure_present'])
+            self.assertIn('requires kernel/cgroup evidence', details['interpretation'])
+
+    def test_real_child_signal_exit_is_saved_even_without_python_traceback(self):
+        with tempfile.TemporaryDirectory() as folder:
+            record = Path(folder) / 'active_child.json'
+            status = workflow.run_child([sys.executable, '-c',
+                'import os, signal; os.kill(os.getpid(), signal.SIGKILL)'], record)
+            self.assertEqual(status, -signal.SIGKILL)
+            details = data.read(record)
+            self.assertEqual(details['returncode'], -9)
+            self.assertEqual(details['signal_name'], 'SIGKILL')
+            self.assertGreaterEqual(details['elapsed_seconds'], 0.)
+
     def test_four_independent_arms_forward_cache_and_compare_matched_control_without_touching_resolution(self):
         with tempfile.TemporaryDirectory() as folder, contextlib.redirect_stdout(io.StringIO()):
             root = Path(folder); args = arguments(root); args.run_dir.mkdir()
