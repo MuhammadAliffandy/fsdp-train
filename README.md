@@ -1127,3 +1127,7 @@ bash scripts/launch_fsdp_resolution_nohup.sh
 ```
 
 Monitor `logs/fsdp_resolution/latest.log`. Omit `RUN_TRAINING=1` for audit only. The same cache option is supported by foundation/recovery launchers and by `--verified-cache` on their Python entry points. Resume requires the original cache mode/root/config/source revision. `cache_target_verification.json`, `source_verification.json`, configs and summaries record the target authority and explicitly state that original annotation files were not verified. A missing/changed CT, bad cache, target mismatch, failed foundation reproduction or failed audit prevents subsequent training. No test CTs/targets are loaded; this mode does not recover the original17-class annotation files, ColorTables or the20reserved test annotations.
+
+### Research plan for the next FSDP experiments
+
+The 24 November research note is in `docs/FSDP_RESEARCH_2026-11-24.md`. It relates primary papers and official implementations to the current hybrid, distinguishes measured results from hypotheses, and proposes controlled prompt-history, boundary-loss and residual-refiner experiments. This is a design proposal; it does not change the active workflow or launch another run.
