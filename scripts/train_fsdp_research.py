@@ -156,6 +156,18 @@ def metric_map(bundle, threshold):
     return {str(k): bundle['refined'][k][threshold]['metrics'] for k in (1, 5)}
 
 
+def allocator_limit(device):
+    value = os.environ.get('FSDP_RESEARCH_GPU_MEMORY_GIB')
+    if value is None or device.type != 'cuda':
+        return None
+    budget = float(value)
+    total = torch.cuda.get_device_properties(device).total_memory
+    if not math.isfinite(budget) or budget <= 0 or budget * 2**30 > total:
+        raise ValueError('Invalid per-process research GPU memory budget')
+    torch.cuda.set_per_process_memory_fraction(budget * 2**30 / total, device)
+    return budget
+
+
 def verify_exports(prepared, validation, threshold, output):
     from train_private_tiny import native_prediction_indices, sparse_scores
     from fsdp_research_metrics import surface_metrics
@@ -213,11 +225,13 @@ def execute(args):
     args.source_best_epoch = config['foundation']['source_best_epoch']
     random.seed(args.seed); np.random.seed(args.seed); torch.manual_seed(args.seed)
     device = torch.device(args.device)
+    memory_budget = allocator_limit(device)
     if device.type == 'cuda':
         torch.cuda.manual_seed_all(args.seed)
     properties = torch.cuda.get_device_properties(device) if device.type == 'cuda' else None
     hardware = {'device': str(device), 'cuda_visible_devices': os.environ.get('CUDA_VISIBLE_DEVICES'),
-        'gpu_name': properties.name if properties else None, 'precision': args.precision}
+        'gpu_name': properties.name if properties else None, 'precision': args.precision,
+        'pytorch_allocator_budget_gib': memory_budget}
     data.save(args.run_dir / ('resume_hardware.json' if args.resume else 'hardware.json'), hardware)
     original, _ = base.build(args)
     foundation.load_foundation_weights(original, args, config)

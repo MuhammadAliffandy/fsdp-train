@@ -2,6 +2,7 @@ import argparse
 import contextlib
 import copy
 import io
+import os
 from pathlib import Path
 import sys
 import tarfile
@@ -26,6 +27,21 @@ from evaluate_private_validation import file_hash
 
 
 class ResearchTrainerTests(unittest.TestCase):
+    def test_shared_allocator_budget_is_applied_only_to_visible_cuda_device(self):
+        device = torch.device('cuda:0')
+        with patch.dict(os.environ, {'FSDP_RESEARCH_GPU_MEMORY_GIB': '40'}), \
+             patch.object(torch.cuda, 'get_device_properties', return_value=argparse.Namespace(total_memory=80 * 2**30)), \
+             patch.object(torch.cuda, 'set_per_process_memory_fraction') as limit:
+            self.assertEqual(research.allocator_limit(device), 40.)
+            limit.assert_called_once_with(.5, device)
+            self.assertIsNone(research.allocator_limit(torch.device('cpu')))
+        with patch.dict(os.environ, {'FSDP_RESEARCH_GPU_MEMORY_GIB': '100'}), \
+             patch.object(torch.cuda, 'get_device_properties', return_value=argparse.Namespace(total_memory=80 * 2**30)), \
+             patch.object(torch.cuda, 'set_per_process_memory_fraction') as limit:
+            with self.assertRaisesRegex(ValueError, 'GPU memory budget'):
+                research.allocator_limit(device)
+            limit.assert_not_called()
+
     def test_verified_prepare_keeps_cache_and_source_immutable_and_resume_settings_are_strict(self):
         with tempfile.TemporaryDirectory() as folder, contextlib.redirect_stdout(io.StringIO()):
             root = Path(folder)

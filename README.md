@@ -1136,7 +1136,7 @@ The 24 November research note is in `docs/FSDP_RESEARCH_2026-11-24.md`. It relat
 
 `launch_fsdp_research_nohup.sh` is an independent pipeline. The implementation adds new Python files; existing resolution/foundation/model/data scripts are unchanged, preserving the active resolution parent's code checks. It does not stop, resume or write into the resolution run. Logs, PID files and latest links use `fsdp_research`.
 
-Default physical GPU is1. The launcher queries `nvidia-smi`, refuses a GPU with an existing compute process, records its index/UUID, and sets `CUDA_VISIBLE_DEVICES` to that UUID. The child uses logical `cuda:0` inside that single-device mapping. Select another idle physical index with `GPU_ID`; the check is a launch-time snapshot, not a system-wide reservation. No jobs are killed or GPUs reset.
+Default physical GPU is1. In default exclusive-start mode, the launcher queries `nvidia-smi`, refuses a GPU with an existing compute process, records its index/UUID, and sets `CUDA_VISIBLE_DEVICES` to that UUID. The child uses logical `cuda:0` inside that single-device mapping. Select another idle physical index with `GPU_ID`; the check is a launch-time snapshot, not a system-wide reservation. No jobs are killed or GPUs reset. Explicit shared-capacity mode is described below.
 
 On DGX, while the resolution pipeline continues on its other GPU:
 
@@ -1182,4 +1182,27 @@ Copy the completed bundle from a local terminal:
 
 ```bash
 scp 'D13K48009@DGXH100:~/raid/Clara/fsdp-train/outputs/private/fsdp_research/latest/results.tar.gz' ./fsdp_research_results.tar.gz
+```
+
+### When every GPU has a compute process
+
+An existing PID does not establish that VRAM is full. `ALLOW_GPU_SHARING=1` explicitly permits sharing a GPU if enough memory is free; the default remains strict. `GPU_ID=auto` scans candidates and prefers an eligible idle GPU, otherwise the eligible device with the most free VRAM. `EXCLUDE_GPU_IDS` defaults to0 and can contain comma-separated physical indices. The launcher also detects readable Linux processes from the current resolution run and excludes their GPUs even when sharing is enabled. Use explicit exclusions for any additional GPU that must remain dedicated.
+
+Shared mode defaults to a40GiB PyTorch allocator limit plus8GiB headroom, requiring at least48GiBfree. The effective free threshold is the maximum of `MIN_FREE_GPU_GIB` and allocator budget + `GPU_RESERVE_GIB`; lowering the former does not silently remove headroom. These are launch budgets, not a measured guarantee that a model fits. CUDA library allocations outside the PyTorch allocator and other jobs' subsequent memory growth are not reserved by this check; shared GPU compute also competes for throughput.
+
+On DGX, allow sharing explicitly and choose automatically while protecting the original GPU:
+
+```bash
+cd ~/raid/Clara/fsdp-train && git pull --ff-only origin main && conda activate fsdp-med3d && \
+GPU_ID=auto ALLOW_GPU_SHARING=1 MIN_FREE_GPU_GIB=48 EXCLUDE_GPU_IDS=0 \
+FSDP_RESEARCH_GPU_MEMORY_GIB=40 FSDP_SOURCE_ROOT="$HOME/raid/normal case_86" FSDP_VERIFIED_CACHE=1 \
+bash scripts/launch_fsdp_research_nohup.sh
+```
+
+`FSDP_RESEARCH_GPU_MEMORY_GIB` is applied with `torch.cuda.set_per_process_memory_fraction` to the single visible device before model allocation; it does not alter existing jobs. The selected GPU, free memory, existing PIDs, capacity policy and allocator limit are recorded. A full-size gradient preflight can still fail if the model requires more than its budget. If no candidate qualifies, no research job starts and the error lists each candidate's free VRAM and rejection reason. No global GPU reservation is taken.
+
+Inspect all capacity without launching a job:
+
+```bash
+python scripts/fsdp_research_gpu.py --list
 ```
