@@ -13,12 +13,14 @@ import time
 import physical_fsdp as data
 from evaluate_private_validation import file_hash
 from fsdp_research_model import VARIANTS
+from fsdp_research_resources import snapshot, event_deltas
 from train_fsdp_research import code_signature
 from train_fsdp_foundation import inspect_foundation
 
 
 def run_child(command, record):
     started = time.monotonic()
+    before = snapshot()
     child = subprocess.Popen(command)
     data.save(record, {'pid': child.pid, 'command': command})
     def forward(signum, frame):
@@ -30,12 +32,25 @@ def run_child(command, record):
             print('Research child has not exited; no subsequent arm will start', flush=True)
         raise SystemExit(128 + signum)
     previous = {sig: signal.signal(sig, forward) for sig in (signal.SIGTERM, signal.SIGINT)}
+    latest = snapshot(child.pid)
     try:
-        status = child.wait()
+        with record.with_suffix('.resources.jsonl').open('a') as samples:
+            while True:
+                samples.write(json.dumps(latest) + '\n')
+                samples.flush()
+                try:
+                    status = child.wait(timeout=5)
+                    break
+                except subprocess.TimeoutExpired:
+                    latest = snapshot(child.pid)
         data.save(record, {'pid': child.pid, 'command': command, **exit_details(status),
                            'elapsed_seconds': time.monotonic() - started})
         return status
     finally:
+        after = snapshot()
+        data.save(record.with_suffix('.resources.json'), {'before_parent': before, 'last_child_sample': latest,
+            'after_parent': after, 'cgroup_event_deltas': event_deltas(before, after),
+            'scope': 'Sampled every 5 seconds; shared cgroup counter changes alone do not identify the killed PID.'})
         for sig, handler in previous.items():
             signal.signal(sig, handler)
 

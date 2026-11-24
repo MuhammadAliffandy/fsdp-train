@@ -66,6 +66,10 @@ class ResearchWorkflowTests(unittest.TestCase):
             self.assertEqual(details['returncode'], -9)
             self.assertEqual(details['signal_name'], 'SIGKILL')
             self.assertGreaterEqual(details['elapsed_seconds'], 0.)
+            self.assertTrue(record.with_suffix('.resources.jsonl').exists())
+            memory = data.read(record.with_suffix('.resources.json'))
+            self.assertIn('cgroup_event_deltas', memory)
+            self.assertEqual(memory['last_child_sample']['pid'], details['pid'])
 
     def test_four_independent_arms_forward_cache_and_compare_matched_control_without_touching_resolution(self):
         with tempfile.TemporaryDirectory() as folder, contextlib.redirect_stdout(io.StringIO()):
@@ -115,7 +119,7 @@ class ResearchWorkflowTests(unittest.TestCase):
             handlers[sig] = handler
             return signal.SIG_DFL
         def wait(*unused, **kwargs):
-            if 'timeout' not in kwargs:
+            if kwargs.get('timeout') != 30:
                 handlers[signal.SIGTERM](signal.SIGTERM, None)
             return -signal.SIGTERM
         child.wait.side_effect = wait

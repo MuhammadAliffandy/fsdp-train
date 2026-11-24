@@ -1212,3 +1212,13 @@ python scripts/fsdp_research_gpu.py --list
 The parent records each completed child process's return code and terminating signal in `<arm>/process_exit.json` and updates `active_child.json` with its PID, command and elapsed time. A negative subprocess return code denotes a signal; for example, `-9` means SIGKILL. SIGKILL alone does not prove an OOM kill: check kernel or cgroup evidence for that PID. An uncatchable signal cannot create the child's Python `failure.json`, so the parent reports the exit record even when that file is absent. Subsequent arms remain stopped on failure.
 
 Runs launched before this exit-record change did not save the return code. For those runs, preserve `active_child.json` and inspect the server's kernel logs around the failure time. Do not infer model quality, label failure or a VRAM shortage from a missing traceback. A changed workflow source requires a new workflow directory under the existing strict resume checks.
+
+If kernel logs are unavailable to the account, the research parent also samples its own child's readable `/proc` memory fields every 5 seconds into `active_child.resources.jsonl`. `active_child.resources.json` records parent snapshots before/after, the last child sample and cgroup memory-event deltas. The reader supports v1 memory and v2 controllers, mount subtrees and ancestor limits; missing/denied files are reported rather than treated as zero or unlimited memory. Counters cover a shared cgroup scope and do not prove which process was an OOM victim. Global MemAvailable does not establish the job's own limit. These diagnostics read files only; no sudo, limit changes or signals to other jobs are used. `PYTHONFAULTHANDLER=1` enables Python fault traces where supported; it cannot catch SIGKILL.
+
+Read current account diagnostics without starting training:
+
+```bash
+python scripts/fsdp_research_resources.py --output outputs/private/fsdp_research/resources_now.json
+```
+
+This snapshot cannot recover the dead process's historical exit code. After pulling the diagnostic changes, use a new default research run name with `RESUME=0`; the frozen foundation/cache/ROI and scientific recipe remain unchanged. An existing resolution run continues independently.

@@ -26,7 +26,8 @@ from train_private_unet import state_hash
 
 EXTRA_FILES = ('train_fsdp_foundation.py', 'audit_foundation_sources.py', 'fsdp_verified_cache.py',
                'sam_refine_resolution.py', 'multiclass_model.py', 'fsdp_research_model.py',
-               'train_fsdp_research.py', 'run_fsdp_research.py', 'fsdp_research_gpu.py', 'fsdp_research_metrics.py')
+               'train_fsdp_research.py', 'run_fsdp_research.py', 'fsdp_research_gpu.py', 'fsdp_research_metrics.py',
+               'fsdp_research_resources.py')
 
 
 def code_signature():
