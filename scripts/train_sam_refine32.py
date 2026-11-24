@@ -61,6 +61,9 @@ def verify_sources(provenance):
 
 
 def prepare(args):
+    if getattr(args, 'foundation_run_dir', None) is not None:
+        from train_fsdp_foundation import prepare_foundation
+        return prepare_foundation(args)
     prior = args.cohort_run_dir
     old, previous = data.read(prior / 'config.json'), data.read(prior / 'summary.json')
     if (not previous['complete'] or previous['experiment'] != 'unet_cohort_train_calibrated'
@@ -301,6 +304,10 @@ def execute(args):
     data.save(args.run_dir / 'hardware.json', hardware)
     print(json.dumps({'hardware': hardware}), flush=True)
     model, turbo_hash = build(args)
+    foundation = config.get('foundation')
+    if foundation:
+        from train_fsdp_foundation import load_foundation_weights
+        load_foundation_weights(model, args, config)
     model = model.to(device)
     model.amp_dtype = torch.bfloat16 if args.precision == 'bf16' else torch.float16
     initial_hash = state_hash(model.state_dict())
@@ -344,12 +351,16 @@ def execute(args):
                 'cuda_rng_state': torch.cuda.get_rng_state_all() if device.type == 'cuda' else []}
     if not args.resume:
         threshold, training, validation = calibrate_validate(model, prepared, device, args.seed)
-        # Zero-initialized residual head must reproduce mapped original SAM logits initially.
-        for clicks in (1, 5):
-            a = validation['refined'][clicks][threshold]['metrics']['mean_bilateral_patient_dice']
-            b = validation['coarse_on_detail'][clicks][threshold]['metrics']['mean_bilateral_patient_dice']
-            if abs(a - b) > 1e-6:
-                raise ValueError('Initial zero residual does not reproduce original SAM component')
+        if foundation:
+            from train_fsdp_foundation import verify_reproduction
+            verify_reproduction(threshold, training, validation, foundation)
+        else:
+            # Zero-initialized residual head must reproduce mapped original SAM logits initially.
+            for clicks in (1, 5):
+                a = validation['refined'][clicks][threshold]['metrics']['mean_bilateral_patient_dice']
+                b = validation['coarse_on_detail'][clicks][threshold]['metrics']['mean_bilateral_patient_dice']
+                if abs(a - b) > 1e-6:
+                    raise ValueError('Initial zero residual does not reproduce original SAM component')
         best_threshold = threshold
         best = validation['refined'][5][threshold]['metrics']['mean_bilateral_patient_dice']
         early = {'anchor': best, 'last_improvement_epoch': 0}
@@ -357,7 +368,8 @@ def execute(args):
                    'val': validation['refined'][5][threshold]['metrics']}
         data.save(run / 'preflight.json', {'passed': True, 'original_turbo_weights_unchanged_on_wrap': True,
             'initial_turbo_state_sha256': turbo_hash, 'detail_feature_grid': [32] * 3, 'sam_token_grid': [8] * 3,
-            'initial_component_reproduces': True, 'initial_metrics': initial, 'coverage': prepared['coverage'],
+            'initial_component_reproduces': not bool(foundation), 'foundation_reproduces': bool(foundation),
+            'foundation': foundation, 'initial_metrics': initial, 'coverage': prepared['coverage'],
             'parameter_counts': {'turbo': sum(p.numel() for p in sam_parameters), 'new': sum(p.numel() for p in new_parameters)},
             'test_images_read': False})
         atomic_save(run / 'hybrid_best.pth', state(0))
@@ -365,12 +377,15 @@ def execute(args):
     stopped = args.patience_epochs > 0 and start - early['last_improvement_epoch'] >= args.patience_epochs
     for epoch in range(start, args.epochs) if not stopped else []:
         lrs = [g['lr'] for g in optimizer.param_groups]
-        measured = train_epoch(model, prepared, optimizer, scaler, criterion, device, epoch, args)
+        sample_epoch = epoch + (foundation['source_best_epoch'] if foundation else 0)
+        measured = train_epoch(model, prepared, optimizer, scaler, criterion, device, sample_epoch, args)
         if measured['optimizer_updates'] + measured['amp_skipped_updates'] != measured['expected_updates']:
             raise ValueError('Incomplete optimizer accumulation')
         scheduler.step()
         row = {'epoch': epoch + 1, 'sam_lr': lrs[0], 'head_lr': lrs[1], **measured,
                'train_threshold': None, 'train_dice_5': None, 'val_dice_1': None, 'val_dice_5': None, 'val_control_0_5': None}
+        if foundation:
+            row['source_plus_additional_epoch'] = sample_epoch + 1
         improved = False
         if epoch == 0 or (epoch + 1) % args.val_every == 0 or epoch + 1 == args.epochs:
             threshold, training, validation = calibrate_validate(model, prepared, device, args.seed)
@@ -435,6 +450,11 @@ def execute(args):
         'validation_images_read': True, 'test_images_read': False, 'protocol': config['protocol'],
         'interpretation': 'GT-assisted interactive hybrid validation.32³is learned CNN detail fusion, not32768SAM transformer tokens. Coarse component uses the refined model click trace and is not an independently trained/queried vanilla-SAM control. No80% generalization claim.',
         'artifacts': str(run), 'export_directory': str(output)}
+    if foundation:
+        summary.update(foundation=foundation, best_additional_epoch=best_epoch,
+            validation_change_vs_foundation=best - foundation['expected_validation']['5']['mean_bilateral_patient_dice'],
+            selection_includes_unchanged_foundation=True,
+            optimizer_protocol='fresh optimizer and lower-LR schedule; inherited best model weights; additional epoch0 is unchanged foundation')
     archive = run / 'results.tar.gz'
     summary['archive'] = str(archive)
     data.save(output / 'summary.json', summary)

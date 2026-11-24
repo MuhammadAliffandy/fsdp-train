@@ -995,3 +995,38 @@ RESUME=1 MULTICLASS_RUN_NAME=fsdp_multiclass_tokens16_ORIGINAL_NAME bash scripts
 ```
 
 Compare the final16³run with CNN64/encoder8³using identical split, seed, physical preprocessing and training settings. Record all adaptation/context changes with the scores; macro17Dice and FSDP1/9Dice remain separate. The20test images remain unread. GPU memory suitability, runtime and validation improvement require DGX measurements.
+
+## Continue the successful FSDP45.63% foundation
+
+The current priority is FSDP segmentation using the successful binary interactive hybrid as the foundation. `recover_fsdp_foundation_nohup.sh` first verifies the original completed run, checkpoint/cache hashes, model/data implementations, package versions and frozen54/10/20split. It then stops verified active multiclass jobs from this project's tracked PID files, checks that they exited, and launches a separate FSDP continuation with nohup. Saved multiclass checkpoints/results and the successful foundation are retained. Run this on the Linux DGX:
+
+```bash
+cd ~/raid/Clara/fsdp-train && git pull --ff-only origin main && conda activate fsdp-med3d && bash scripts/recover_fsdp_foundation_nohup.sh
+```
+
+The foundation is pinned to `runs/fsdp_private_sam_refine32_20261123T144159Z_3745292`, selected checkpoint SHA256 `81b3e436c25062d25544e6a0b89d1c7887e7935cbf087ce3676fea08f1144a39`. Its full trained hybrid is loaded strictly: encoder, prompt encoder, SAM mask decoder and CNN refiner. Reuse the exact `hybrid_data.pt` physical ROI/context/normalization cache; do not regenerate preprocessing. CNN detail remains32³and Turbo tokens8³. Sampling remains108side ROIs/epoch with5oracle interactions/side, the same loss/auxiliary supervision, paired light augmentation, seed, accumulation, train-only threshold calibration and FSDP-based checkpoint selection.
+
+Before any optimizer step, recompute train and validation@1/@5and the fixed0.5validation control. They must reproduce the foundation within0.0001absolute Dice, including the train-selected threshold0.35, or the job stops. Successful preflight establishes reproduction of the baseline, not improvement. Epoch0in the new run is the unchanged foundation, included among best-checkpoint candidates.
+
+Fine-tuning uses a fresh optimizer with both source learning rates multiplied by0.2(defaultSAM2e-6andCNN2e-5), up to100additional epochs and50epoch patience. Continue the source-best active groups (image blocks10/11,mask decoder,CNN) with no new head-only phase. A new five-epoch learning-rate warmup/cosine schedule begins; sampling seeds continue after the source best epoch30. This is a controlled continuation, not an exact optimizer/scheduler resume. Checkpoint/history epoch fields count additional epochs; `source_plus_additional_epoch` records the sampling epoch. Original test images remain unread.
+
+```bash
+tail -n 80 -f logs/fsdp_foundation/latest.log
+python -m json.tool outputs/private/fsdp_foundation/latest/preflight.json
+python -m json.tool outputs/private/fsdp_foundation/latest/progress.json
+python -m json.tool outputs/private/fsdp_foundation/latest/summary.json
+```
+
+Final `validation_change_vs_foundation` reports gain or numerical reproduction tolerance; `best_additional_epoch:0` means no better checkpoint was found and the unchanged foundation was retained. The new run exports native validation overlays/masks, train/validation CSVs, curves and `results.tar.gz`. All scores retain the GT-side-ROI/oracle-click protocol and are Dice, not voxel accuracy or automatic full-scan performance. Higher Dice is not guaranteed.
+
+To stop multiclass jobs only, without launching anything:
+
+```bash
+python scripts/stop_multiclass_training.py --project-dir "$PWD"
+```
+
+Stopping verifies process owner, script, run directory/config, PID start time and command. It uses SIGTERM, waits up to30seconds and refuses to launch if a tracked job remains active. It does not discover manually launched jobs without these PID files. Existing checkpoint files/logs remain; work since the most recent completed checkpoint may be lost. On another GPU or a relocated verified foundation, use `GPU_ID` or `FSDP_FOUNDATION_DIR`. Resume a new unfinished continuation with the original settings/name:
+
+```bash
+RESUME=1 FSDP_FOUNDATION_RUN_NAME=fsdp_private_foundation_ORIGINAL_NAME bash scripts/launch_fsdp_foundation_nohup.sh
+```
