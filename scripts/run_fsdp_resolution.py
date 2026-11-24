@@ -12,6 +12,7 @@ import physical_fsdp as data
 from evaluate_private_validation import file_hash
 from sam_refine_resolution import VARIANTS
 from train_fsdp_foundation import inspect_foundation
+from audit_foundation_sources import inventory, problem_message
 
 
 def run_child(command):
@@ -34,10 +35,15 @@ def run_child(command):
 
 
 def execute(args):
+    sources = inventory(data.read(args.foundation_run_dir / 'source_provenance.json'))
+    data.save(args.run_dir / 'source_precheck.json', sources)
+    if not sources['ready']:
+        raise ValueError(problem_message(sources))
     inspect_foundation(args.foundation_run_dir)
     code = Path(__file__).resolve().parent
     tracked = ('train_sam_refine32.py', 'train_fsdp_foundation.py', 'sam_refine32.py', 'sam_refine_data.py',
-               'sam_refine_resolution.py', 'fsdp_resolution.py', 'physical_fsdp.py', 'multiclass_model.py', 'run_fsdp_resolution.py')
+               'sam_refine_resolution.py', 'fsdp_resolution.py', 'physical_fsdp.py', 'multiclass_model.py',
+               'run_fsdp_resolution.py', 'audit_foundation_sources.py')
     signature = {name: file_hash(code / name) for name in tracked}
     data.save(args.run_dir / 'workflow_code_sha256.json', signature)
     entries = []

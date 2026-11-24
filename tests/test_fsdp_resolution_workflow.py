@@ -17,6 +17,21 @@ from train_private_unet import state_hash
 
 
 class WorkflowTests(unittest.TestCase):
+    def test_missing_label_stops_before_loading_foundation_or_launching_any_child(self):
+        from test_audit_foundation_sources import fixture as source_fixture
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            provenance = source_fixture(root / 'data')
+            (root / 'base').mkdir()
+            data.save(root / 'base/source_provenance.json', provenance)
+            Path(provenance['train'][0]['source_label']).unlink()
+            args = argparse.Namespace(foundation_run_dir=root / 'base', run_dir=root, train=True)
+            with patch.object(workflow, 'inspect_foundation') as foundation, patch.object(workflow, 'run_child') as child:
+                with self.assertRaisesRegex(ValueError, 'Foundation inputs unavailable'):
+                    workflow.execute(args)
+            foundation.assert_not_called(); child.assert_not_called()
+            self.assertFalse(data.read(root / 'source_precheck.json')['ready'])
+
     def test_stop_signal_is_forwarded_to_active_child_and_exits_workflow(self):
         from unittest.mock import MagicMock
         child = MagicMock(pid=12345)
@@ -66,6 +81,8 @@ class WorkflowTests(unittest.TestCase):
     def test_failed_audit_prevents_every_training_variant(self):
         with tempfile.TemporaryDirectory() as folder, contextlib.redirect_stdout(io.StringIO()):
             root = Path(folder)
+            (root / 'base').mkdir()
+            data.save(root / 'base/source_provenance.json', {'train': [], 'val': []})
             args = argparse.Namespace(foundation_run_dir=root / 'base', run_dir=root, train=True, epochs=100,
                 lr_multiplier=.2, patience_epochs=50, device='cpu')
             calls = []
@@ -81,6 +98,8 @@ class WorkflowTests(unittest.TestCase):
     def test_matching_audits_allow_four_independent_training_runs_and_control_comparison(self):
         with tempfile.TemporaryDirectory() as folder, contextlib.redirect_stdout(io.StringIO()):
             root = Path(folder)
+            (root / 'base').mkdir()
+            data.save(root / 'base/source_provenance.json', {'train': [], 'val': []})
             args = argparse.Namespace(foundation_run_dir=root / 'base', run_dir=root, train=True, epochs=100,
                 lr_multiplier=.2, patience_epochs=50, device='cpu')
             def run(command):

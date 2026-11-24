@@ -12,6 +12,7 @@ import sam_refine_data as views
 import train_sam_refine32 as trainer
 from evaluate_private_validation import file_hash
 from train_private_tiny import select_patients
+from audit_foundation_sources import check_folder, inventory, problem_message
 
 
 FOUNDATION_SHA256 = '81b3e436c25062d25544e6a0b89d1c7887e7935cbf087ce3676fea08f1144a39'
@@ -39,6 +40,7 @@ def inspect_foundation(folder):
             or summary['detail_feature_grid'] != [32] * 3 or summary['sam_token_grid'] != [8] * 3
             or summary['oracle_clicks_per_side'] != [1, 5]):
         raise ValueError('Expected the completed45.63%FSDP foundation; refusing another run')
+    check_folder(folder)
     for name, expected in (('hybrid_best.pth', FOUNDATION_SHA256), ('hybrid_data.pt', config['cache_sha256'])):
         print(f'Checking unchanged foundation {name}', flush=True)
         if file_hash(folder / name) != expected:
@@ -77,7 +79,10 @@ def prepare_foundation(args):
     prepared = torch.load(args.foundation_run_dir / 'hybrid_data.pt', map_location='cpu', weights_only=False)
     if prepared['policy'] != old['physical_policy']:
         raise ValueError('Foundation cache physical policy differs')
-    trainer.verify_sources(prepared['source_provenance'])
+    source_check = inventory(prepared['source_provenance'], verify=True)
+    data.save(args.run_dir / 'source_verification.json', source_check)
+    if not source_check['ready']:
+        raise ValueError(problem_message(source_check))
     if len(prepared['patients']['train']) != 54 or len(prepared['patients']['val']) != 10:
         raise ValueError('Expected exact54/10foundation cohort')
     config = {key: str(v) if isinstance(v, Path) else v for key, v in vars(args).items() if key != 'resume'}
@@ -86,7 +91,8 @@ def prepare_foundation(args):
         augmentation_protocol=old['augmentation'], threshold_protocol=old['threshold_protocol'],
         selection=old['selection'], physical_policy=prepared['policy'], cache_sha256=old['cache_sha256'],
         manifest_sha256=old['manifest_sha256'], test_images_read=False,
-        code_sha256={name: file_hash(Path(__file__).with_name(name)) for name in (*trainer.CODE_FILES, 'train_fsdp_foundation.py')},
+        code_sha256={name: file_hash(Path(__file__).with_name(name)) for name in (*trainer.CODE_FILES,
+            'train_fsdp_foundation.py', 'audit_foundation_sources.py')},
         sam_source_sha256=views.source_hashes(args.sam_dir),
         foundation={'run': str(args.foundation_run_dir), 'checkpoint_sha256': FOUNDATION_SHA256,
             'config_sha256': file_hash(args.foundation_run_dir / 'config.json'),

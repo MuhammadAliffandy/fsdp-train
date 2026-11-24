@@ -34,6 +34,7 @@ def fixture(root):
                 'patients': {'train': {str(i): {} for i in range(54)}, 'val': {str(i): {} for i in range(10)}},
                 'source_provenance': {'train': [], 'val': []}}
     torch.save(prepared, base / 'hybrid_data.pt')
+    (base / 'source_provenance.json').write_text(json.dumps(prepared['source_provenance']))
     old = {'versions': {}, 'cache_sha256': file_hash(base / 'hybrid_data.pt'), 'physical_policy': prepared['policy'],
            'sam_dir': str(sam.parent), 'checkpoint': str(turbo), 'turbo_sha256': file_hash(turbo),
            'sam_source_sha256': foundation.views.source_hashes(sam.parent), 'cohort_run_dir': str(cohort),

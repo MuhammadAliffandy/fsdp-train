@@ -1082,3 +1082,23 @@ scp 'D13K48009@DGXH100:~/raid/Clara/fsdp-train/outputs/private/fsdp_resolution/l
 ```
 
 Start a new parent run for this revision. Individual unfinished training children can resume through `train_fsdp_foundation.py --resume`with the original child path, foundation, resolution variant and exact settings/source. The parent workflow itself has no resume mode. An unfinished continuation from an earlier source revision fails its existing resume guard; completed successful foundation artifacts remain reusable.
+
+### Missing original source file
+
+The DGX audit stopped on a missing original final label (`labelsTr/<patient_id>-label.nii.gz`) during source verification, before model training. This is an input-path availability problem; it does not establish failure of the new architecture. Source paths can become stale after a move/rename, or files can be absent. Do not replace final labels with expert or newly generated masks to get past verification.
+
+Foundation and resolution workflows now check train/validation source paths before loading the large cache or launching all four child audits. The parent writes `source_precheck.json`. Presence checks are explicitly distinguished from SHA256 verification. After cache loading, verification uses the provenance inside the checksum-verified cache as authority and writes `source_verification.json`; all original content checks remain required.
+
+Diagnose files on DGX without images/GPU or data changes:
+
+```bash
+cd ~/raid/Clara/fsdp-train && git pull --ff-only origin main
+python scripts/audit_foundation_sources.py \
+  --foundation-run-dir runs/fsdp_private_sam_refine32_20261123T144159Z_3745292 \
+  --search-root "$HOME/raid/normal case_86" --verify \
+  --output outputs/private/source_audit/latest.json
+```
+
+The report lists unavailable/changed inputs, expected checksums, directory existence and same-patient candidate files in the corresponding `imagesTr`, `labelsTr`, or `ColorTable`folder. If the dataset was relocated, add `--search-root "/actual/new/dataset/root"`. Expert folders and test patient IDs are not searched. Candidate paths are diagnostic only, even when `sha256_matches:true`; no files are copied, linked, renamed, replaced or ignored automatically. A missing or changed original keeps readiness false and produces exit2until the original paths/files are restored from verified data. A checksum mismatch alone does not establish differing clinical annotations, but does not meet the foundation's byte identity requirement.
+
+After restoring the original file locations and verifying `ready:true`with `--verify`, launch a new timestamped resolution audit. Keep the failed run for diagnostics. No model weights, ROI, prompts or baseline checkpoints are changed by this correction.
