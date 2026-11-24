@@ -12,7 +12,7 @@ import physical_fsdp as data
 from evaluate_private_validation import file_hash
 from sam_refine_resolution import VARIANTS
 from train_fsdp_foundation import inspect_foundation
-from audit_foundation_sources import inventory, problem_message
+from audit_foundation_sources import inventory, problem_message, bind_sources
 
 
 def run_child(command):
@@ -35,11 +35,13 @@ def run_child(command):
 
 
 def execute(args):
-    sources = inventory(data.read(args.foundation_run_dir / 'source_provenance.json'))
+    source_root = getattr(args, 'source_root', None)
+    sources = inventory(bind_sources(data.read(args.foundation_run_dir / 'source_provenance.json'), source_root))
+    sources['source_root_override'] = str(source_root) if source_root else None
     data.save(args.run_dir / 'source_precheck.json', sources)
     if not sources['ready']:
         raise ValueError(problem_message(sources))
-    inspect_foundation(args.foundation_run_dir)
+    inspect_foundation(args.foundation_run_dir, source_root)
     code = Path(__file__).resolve().parent
     tracked = ('train_sam_refine32.py', 'train_fsdp_foundation.py', 'sam_refine32.py', 'sam_refine_data.py',
                'sam_refine_resolution.py', 'fsdp_resolution.py', 'physical_fsdp.py', 'multiclass_model.py',
@@ -57,6 +59,8 @@ def execute(args):
                 '--foundation-run-dir', str(args.foundation_run_dir), '--run-dir', str(child),
                 '--resolution-variant', variant, '--epochs', str(args.epochs), '--lr-multiplier', str(args.lr_multiplier),
                 '--patience-epochs', str(args.patience_epochs), '--device', args.device]
+            if source_root:
+                command.extend(['--source-root', str(source_root)])
             if stage == 'audit':
                 command.append('--audit-only')
             print(f'Starting {stage}: {variant}; outputs={child}', flush=True)
@@ -118,6 +122,7 @@ def execute(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--foundation-run-dir', type=Path, required=True)
+    parser.add_argument('--source-root', type=Path)
     parser.add_argument('--run-dir', type=Path, required=True)
     parser.add_argument('--train', action='store_true')
     parser.add_argument('--epochs', type=int, default=100)
@@ -126,11 +131,15 @@ def main():
     parser.add_argument('--device', default='cuda:0')
     args = parser.parse_args()
     args.foundation_run_dir = args.foundation_run_dir.expanduser().resolve()
+    if args.source_root:
+        args.source_root = args.source_root.expanduser().resolve()
     args.run_dir = args.run_dir.expanduser().resolve()
     source = data.read(args.foundation_run_dir / 'config.json')
     control = data.read(Path(source['cohort_run_dir']) / 'config.json')
     protected = (args.foundation_run_dir, Path(source['sam_dir']).resolve(), Path(source['cohort_run_dir']).resolve(),
                  Path(control['source_root']).resolve(), Path(control['data_dir']).resolve())
+    if args.source_root:
+        protected += (args.source_root,)
     if args.run_dir.exists() or any(args.run_dir.is_relative_to(path) for path in protected):
         parser.error('Choose a new output directory outside the successful foundation')
     args.run_dir.mkdir(parents=True)

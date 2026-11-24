@@ -15,6 +15,7 @@ done
 COMMAND=(python -u "$PROJECT_DIR/scripts/run_fsdp_resolution.py" --foundation-run-dir "$BASE" --run-dir "$RUN"
   --epochs "${ADDITIONAL_EPOCHS:-100}" --lr-multiplier "${LR_MULTIPLIER:-0.2}"
   --patience-epochs "${PATIENCE_EPOCHS:-50}" --device cuda:0)
+if [[ -n "${FSDP_SOURCE_ROOT:-}" ]]; then COMMAND+=(--source-root "$FSDP_SOURCE_ROOT"); fi
 case "${RUN_TRAINING:-0}" in
   0) ;;
   1) COMMAND+=(--train) ;;

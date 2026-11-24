@@ -123,7 +123,8 @@ class ResolutionTests(unittest.TestCase):
             prepared = {'samples': {'train': [sample], 'val': []}, 'policy': {'selected': plan, 'normalization': norm},
                         'source_provenance': {'train': [{'patient_id': '1'}], 'val': []}}
             def records(unused, split):
-                return [{'patient_id': '1'}] if split == 'train' else []
+                return [{'patient_id': '1', 'source_image': str(source / 'imagesTr/1.nii.gz'),
+                         'source_label': str(source / 'labelsTr/1-label.nii.gz')}] if split == 'train' else []
             def load(*unused):
                 return image, None, array, labels, {}
             with patch.object(physical, 'records_for', records), patch.object(physical, 'load_case', load):
@@ -131,6 +132,14 @@ class ResolutionTests(unittest.TestCase):
                 old_grid = copy.deepcopy(sample['sam_grid'])
                 pointers = [sample[k].data_ptr() for k in ('image', 'target', 'valid')]
                 workflow.replace_contexts(prepared, SimpleNamespace(foundation_run_dir=root))
+                actual_root = (root / 'actual data').resolve()
+                def relocated(record, bound_root, expected, alias):
+                    self.assertEqual(bound_root, actual_root)
+                    self.assertEqual(record['source_image'], str(actual_root / 'imagesTr/1.nii.gz'))
+                    self.assertEqual(record['source_label'], str(actual_root / 'labelsTr/1-label.nii.gz'))
+                    return load()
+                with patch.object(workflow, 'load_bound_case', relocated):
+                    workflow.replace_contexts(prepared, SimpleNamespace(foundation_run_dir=root, source_root=actual_root))
             self.assertEqual(sample['sam_image'].shape[-3:], (256,) * 3)
             self.assertEqual(pointers, [sample[k].data_ptr() for k in ('image', 'target', 'valid')])
             center = lambda g: np.asarray(g['origin']) + (np.asarray(g['size']) - 1) * g['spacing'] / 2

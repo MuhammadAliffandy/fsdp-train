@@ -12,7 +12,7 @@ import sam_refine_data as views
 import train_sam_refine32 as trainer
 from evaluate_private_validation import file_hash
 from train_private_tiny import select_patients
-from audit_foundation_sources import check_folder, inventory, problem_message
+from audit_foundation_sources import check_folder, inventory, problem_message, bind_sources
 
 
 FOUNDATION_SHA256 = '81b3e436c25062d25544e6a0b89d1c7887e7935cbf087ce3676fea08f1144a39'
@@ -29,7 +29,7 @@ def recipe_values(config):
     return result
 
 
-def inspect_foundation(folder):
+def inspect_foundation(folder, source_root=None):
     folder = folder.resolve()
     config, summary = [data.read(folder / name) for name in ('config.json', 'summary.json')]
     score = summary['best_validation_metrics']['5']['mean_bilateral_patient_dice']
@@ -40,7 +40,7 @@ def inspect_foundation(folder):
             or summary['detail_feature_grid'] != [32] * 3 or summary['sam_token_grid'] != [8] * 3
             or summary['oracle_clicks_per_side'] != [1, 5]):
         raise ValueError('Expected the completed45.63%FSDP foundation; refusing another run')
-    check_folder(folder)
+    check_folder(folder, source_root)
     for name, expected in (('hybrid_best.pth', FOUNDATION_SHA256), ('hybrid_data.pt', config['cache_sha256'])):
         print(f'Checking unchanged foundation {name}', flush=True)
         if file_hash(folder / name) != expected:
@@ -69,7 +69,8 @@ def inspect_foundation(folder):
 
 
 def prepare_foundation(args):
-    old, summary = inspect_foundation(args.foundation_run_dir)
+    source_root = getattr(args, 'source_root', None)
+    old, summary = inspect_foundation(args.foundation_run_dir, source_root)
     if (views.source_hashes(args.sam_dir) != old['sam_source_sha256']
             or file_hash(args.checkpoint) != old['turbo_sha256']):
         raise ValueError('Original Turbo source/checkpoint differs from foundation')
@@ -79,10 +80,15 @@ def prepare_foundation(args):
     prepared = torch.load(args.foundation_run_dir / 'hybrid_data.pt', map_location='cpu', weights_only=False)
     if prepared['policy'] != old['physical_policy']:
         raise ValueError('Foundation cache physical policy differs')
-    source_check = inventory(prepared['source_provenance'], verify=True)
+    original_sources = prepared['source_provenance']
+    bound_sources = bind_sources(original_sources, source_root)
+    source_check = inventory(bound_sources, verify=True)
+    source_check['source_root_override'] = str(source_root) if source_root else None
+    source_check['authority'] = 'checksums from the original verified cache; only paths may be rebound'
     data.save(args.run_dir / 'source_verification.json', source_check)
     if not source_check['ready']:
         raise ValueError(problem_message(source_check))
+    prepared['source_provenance'] = bound_sources
     if len(prepared['patients']['train']) != 54 or len(prepared['patients']['val']) != 10:
         raise ValueError('Expected exact54/10foundation cohort')
     config = {key: str(v) if isinstance(v, Path) else v for key, v in vars(args).items() if key != 'resume'}
@@ -117,6 +123,8 @@ def prepare_foundation(args):
     else:
         data.save(args.run_dir / 'config.json', config)
         data.save(args.run_dir / 'source_provenance.json', prepared['source_provenance'])
+        if source_root:
+            data.save(args.run_dir / 'foundation_source_provenance.json', original_sources)
     return prepared, config
 
 
@@ -153,6 +161,7 @@ def verify_reproduction(threshold, training, validation, foundation):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--foundation-run-dir', type=Path, required=True)
+    parser.add_argument('--source-root', type=Path, help='Relocated dataset root; all source hashes must match the foundation')
     parser.add_argument('--run-dir', type=Path)
     parser.add_argument('--epochs', type=int, default=100, help='Additional epochs')
     parser.add_argument('--lr-multiplier', type=float, default=.2)
@@ -164,7 +173,9 @@ def main():
     parser.add_argument('--audit-only', action='store_true')
     args = parser.parse_args()
     args.foundation_run_dir = args.foundation_run_dir.expanduser().resolve()
-    old, _ = inspect_foundation(args.foundation_run_dir)
+    if args.source_root:
+        args.source_root = args.source_root.expanduser().resolve()
+    old, _ = inspect_foundation(args.foundation_run_dir, args.source_root)
     if args.check_only:
         print('Foundation weights/cache/source/split/package checks passed; no model or image tensors loaded', flush=True)
         return
@@ -183,6 +194,8 @@ def main():
     control = data.read(args.cohort_run_dir / 'config.json')
     protected = (args.foundation_run_dir, args.sam_dir, args.cohort_run_dir,
                  Path(control['source_root']).resolve(), Path(control['data_dir']).resolve())
+    if args.source_root:
+        protected += (args.source_root,)
     for path in protected:
         if args.run_dir.is_relative_to(path):
             parser.error('New run must be outside foundation/source/control')

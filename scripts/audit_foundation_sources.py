@@ -10,6 +10,52 @@ from pathlib import Path
 FOLDERS = {'source_image': 'imagesTr', 'source_label': 'labelsTr', 'color_table': 'ColorTable'}
 
 
+def bind_sources(provenance, source_root=None):
+    if source_root is None:
+        return provenance
+    if any(split not in ('train', 'val') for split in provenance):
+        raise ValueError('Only train/val source provenance is supported')
+    root = Path(source_root).expanduser().resolve()
+    return {split: [{**record, **{key: str((root / folder / Path(record[key]).name).resolve())
+                    for key, folder in FOLDERS.items()}} for record in records]
+            for split, records in provenance.items()}
+
+
+def bind_record(record, source_root):
+    root = Path(source_root).expanduser().resolve()
+    return {**record, **{key: str((root / FOLDERS[key] / Path(record[key]).name).resolve())
+                        for key in ('source_image', 'source_label')}}
+
+
+def load_bound_case(record, source_root, expected, alias):
+    """Read relocated byte-identical inputs, including symlinked role directories."""
+    import csv
+    import numpy as np
+    import physical_fsdp as physical
+    root = Path(source_root).resolve()
+    paths = {key: Path(expected[key]).resolve() for key in FOLDERS}
+    for key, folder in FOLDERS.items():
+        if not paths[key].is_relative_to((root / folder).resolve()):
+            raise ValueError('Relocated source is outside the specified role directory')
+        if key != 'color_table' and Path(record[key]).resolve() != paths[key]:
+            raise ValueError('Relocated manifest/provenance path differs')
+        if digest(paths[key]) != expected[key + '_sha256']:
+            raise ValueError('Relocated source content differs from the verified foundation')
+    with paths['color_table'].open(encoding='utf-8-sig', newline='') as stream:
+        colors = {int(row['LabelValue']): row['Name'].strip().upper() for row in csv.DictReader(stream)}
+    if colors.get(1) != 'RFSDP' or colors.get(9) != 'LFSDP':
+        raise ValueError('Relocated ColorTable does not confirm FSDP1/9')
+    image, label = [physical.sitk.ReadImage(str(paths[key])) for key in ('source_image', 'source_label')]
+    if not physical.same_geometry(image, label):
+        raise ValueError('Relocated CT/label physical geometry differs')
+    ct, labels = physical.xyz(image), physical.xyz(label)
+    if (not np.isfinite(ct).all() or not np.isin(labels, range(18)).all()
+            or int((labels == 1).sum()) != record['right_voxels']
+            or int((labels == 9).sum()) != record['left_voxels']):
+        raise ValueError('Relocated CT/final labels/counts differ')
+    return image, label, ct, labels, {**expected, 'case': alias}
+
+
 def digest(path):
     sha = hashlib.sha256()
     with path.open('rb') as stream:
@@ -72,9 +118,10 @@ def inventory(provenance, search_roots=(), verify=False):
             'data_modified': False, 'interpretation': 'Alternatives are diagnostic only; even a checksum match is not applied automatically.'}
 
 
-def check_folder(folder):
+def check_folder(folder, source_root=None):
     path = Path(folder) / 'source_provenance.json'
-    report = inventory(json.loads(path.read_text()))
+    report = inventory(bind_sources(json.loads(path.read_text()), source_root))
+    report['source_root_override'] = str(Path(source_root).resolve()) if source_root else None
     if not report['ready']:
         raise ValueError(problem_message(report))
     return report
@@ -96,15 +143,19 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--foundation-run-dir', type=Path, required=True)
     parser.add_argument('--search-root', type=Path, action='append', default=[])
+    parser.add_argument('--source-root', type=Path, help='Explicit relocated dataset root; original filenames/checksums remain required')
     parser.add_argument('--verify', action='store_true')
     parser.add_argument('--output', type=Path)
     args = parser.parse_args()
     base = args.foundation_run_dir.expanduser().resolve()
-    provenance = json.loads((base / 'source_provenance.json').read_text())
+    original = json.loads((base / 'source_provenance.json').read_text())
+    provenance = bind_sources(original, args.source_root)
     report = inventory(provenance, [p.expanduser().resolve() for p in args.search_root], args.verify)
+    report['source_root_override'] = str(args.source_root.expanduser().resolve()) if args.source_root else None
     if args.output:
         output = args.output.expanduser().resolve()
-        roots = {Path(row[key]).resolve().parent.parent for records in provenance.values() for row in records for key in FOLDERS}
+        roots = {Path(row[key]).resolve().parent.parent for mapping in (original, provenance)
+                 for records in mapping.values() for row in records for key in FOLDERS}
         roots.update(p.expanduser().resolve() for p in args.search_root)
         if output.is_relative_to(base) or any(output.is_relative_to(root) for root in roots):
             parser.error('Report output must be outside foundation and original dataset folders')

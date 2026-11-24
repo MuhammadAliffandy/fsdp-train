@@ -114,6 +114,11 @@ class WorkflowTests(unittest.TestCase):
                         'validation_change_vs_foundation': .04, 'best_checkpoint_sha256': 'synthetic'}
                 data.save(target / 'summary.json', summary)
                 return argparse.Namespace(returncode=0)
+            args.source_root = root / 'actual data'
+            child_run = run
+            def run(command):
+                self.assertEqual(command[command.index('--source-root') + 1], str(args.source_root))
+                return child_run(command)
             with patch.object(workflow, 'inspect_foundation'), patch.object(workflow, 'run_child', run):
                 workflow.execute(args)
             summary = data.read(root / 'summary.json')

@@ -10,6 +10,7 @@ import train_sam_refine32 as trainer
 from sam_refine_resolution import SamRefineResolution, VARIANTS
 from train_fsdp_foundation import verify_reproduction
 from train_private_unet import state_hash
+from audit_foundation_sources import bind_record, load_bound_case
 
 
 def configuration(args, old):
@@ -32,13 +33,17 @@ def replace_contexts(prepared, args):
     old = data.read(args.foundation_run_dir / 'config.json')
     control = data.read(Path(old['cohort_run_dir']) / 'config.json')
     manifest = data.read(Path(control['data_dir']) / 'manifest.json')
-    root = Path(control['source_root']).resolve()
+    source_root = getattr(args, 'source_root', None)
+    root = Path(source_root or control['source_root']).resolve()
     norm = prepared['policy']['normalization']
     for split in ('train', 'val'):
         prior = {row['patient_id']: row for row in prepared['source_provenance'][split]}
         for index, record in enumerate(data.records_for(manifest, split), 1):
             alias = f'{split}_{index:02d}'
-            image, _, _, labels, _ = data.load_case(record, root, prior[record['patient_id']], alias)
+            if source_root:
+                record = bind_record(record, source_root)
+            loader = load_bound_case if source_root else data.load_case
+            image, _, _, labels, _ = loader(record, root, prior[record['patient_id']], alias)
             for sample in (s for s in prepared['samples'][split] if s['case'] == alias):
                 previous = sample['sam_grid']
                 size, step = np.asarray(previous['size']), np.asarray(previous['spacing'])

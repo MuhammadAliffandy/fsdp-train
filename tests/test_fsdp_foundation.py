@@ -62,6 +62,31 @@ def fixture(root):
 
 
 class FoundationTests(unittest.TestCase):
+    def test_relocated_sources_are_verified_against_cache_hashes_and_cache_is_not_rewritten(self):
+        from test_audit_foundation_sources import fixture as source_fixture
+        with tempfile.TemporaryDirectory() as folder, contextlib.redirect_stdout(io.StringIO()):
+            root = Path(folder)
+            base, old, summary, prepared, _ = fixture(root)
+            provenance = source_fixture(root / 'old_source')
+            prepared['source_provenance'] = provenance
+            torch.save(prepared, base / 'hybrid_data.pt')
+            old['cache_sha256'] = file_hash(base / 'hybrid_data.pt')
+            before_cache = old['cache_sha256']
+            (root / 'old_source').rename(root / 'actual data')
+            args = argparse.Namespace(foundation_run_dir=base, run_dir=root / 'new_run', source_root=root / 'actual data',
+                resume=False, sam_dir=Path(old['sam_dir']), checkpoint=Path(old['checkpoint']), **foundation.recipe_values(old))
+            args.run_dir.mkdir()
+            with patch.object(foundation, 'inspect_foundation', return_value=(old, summary)):
+                actual, config = foundation.prepare_foundation(args)
+                self.assertEqual(file_hash(base / 'hybrid_data.pt'), before_cache)
+                self.assertEqual(config['cache_sha256'], before_cache)
+                self.assertEqual(actual['source_provenance']['train'][0]['source_label_sha256'], provenance['train'][0]['source_label_sha256'])
+                self.assertEqual(json.loads((args.run_dir / 'foundation_source_provenance.json').read_text()), provenance)
+                self.assertTrue(json.loads((args.run_dir / 'source_verification.json').read_text())['ready'])
+                Path(actual['source_provenance']['train'][0]['source_label']).write_bytes(b'different')
+                with self.assertRaisesRegex(ValueError, 'Foundation inputs unavailable'):
+                    foundation.prepare_foundation(args)
+
     def test_cli_inherits_recipe_and_only_reduces_learning_rates_in_new_run(self):
         with tempfile.TemporaryDirectory() as folder, contextlib.redirect_stdout(io.StringIO()):
             root = Path(folder)

@@ -1095,10 +1095,17 @@ Diagnose files on DGX without images/GPU or data changes:
 cd ~/raid/Clara/fsdp-train && git pull --ff-only origin main
 python scripts/audit_foundation_sources.py \
   --foundation-run-dir runs/fsdp_private_sam_refine32_20261123T144159Z_3745292 \
-  --search-root "$HOME/raid/normal case_86" --verify \
+  --source-root "/raid/normal case_86" --verify \
   --output outputs/private/source_audit/latest.json
 ```
 
-The report lists unavailable/changed inputs, expected checksums, directory existence and same-patient candidate files in the corresponding `imagesTr`, `labelsTr`, or `ColorTable`folder. If the dataset was relocated, add `--search-root "/actual/new/dataset/root"`. Expert folders and test patient IDs are not searched. Candidate paths are diagnostic only, even when `sha256_matches:true`; no files are copied, linked, renamed, replaced or ignored automatically. A missing or changed original keeps readiness false and produces exit2until the original paths/files are restored from verified data. A checksum mismatch alone does not establish differing clinical annotations, but does not meet the foundation's byte identity requirement.
+The report lists unavailable/changed inputs, expected checksums, directory existence and same-patient candidate files in the corresponding `imagesTr`, `labelsTr`, or `ColorTable`folder. `--source-root` explicitly binds original filenames to the supplied dataset root. All expected SHA256 values remain those of the original foundation. `--search-root` only searches for alternatives and does not bind them. Expert folders and test patient IDs are not searched. Candidate paths are diagnostic only, even when `sha256_matches:true`; no files are copied, linked, renamed, replaced or ignored automatically. Missing or changed inputs keep readiness false and produce exit2. A checksum mismatch alone does not establish differing clinical annotations, but does not meet the foundation's byte identity requirement.
 
-After restoring the original file locations and verifying `ready:true`with `--verify`, launch a new timestamped resolution audit. Keep the failed run for diagnostics. No model weights, ROI, prompts or baseline checkpoints are changed by this correction.
+For the original dataset at `/raid/normal case_86`, launch a new timestamped audit with an explicit root:
+
+```bash
+FSDP_SOURCE_ROOT="/raid/normal case_86" bash scripts/launch_fsdp_resolution_nohup.sh
+tail -n 80 -f logs/fsdp_resolution/latest.log
+```
+
+The same environment variable is supported by the foundation continuation and recovery launchers. It is forwarded to every child, used for source verification and direct original-CT context sampling, and recorded in new run metadata. Role folders may be symlinks. Original cache tensors, source checksums, manifests, checkpoints and historical metadata are not rewritten. Preparation checks actual bytes against provenance inside the checksum-verified cache; an empty or different root stops before training. Keep the failed run for diagnostics. This command audits only by default; training still requires `RUN_TRAINING=1` and every audit passing.
