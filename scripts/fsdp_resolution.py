@@ -34,17 +34,23 @@ def replace_contexts(prepared, args):
     control = data.read(Path(old['cohort_run_dir']) / 'config.json')
     manifest = data.read(Path(control['data_dir']) / 'manifest.json')
     source_root = getattr(args, 'source_root', None)
+    verified_cache = getattr(args, 'verified_cache', False)
     root = Path(source_root or control['source_root']).resolve()
     norm = prepared['policy']['normalization']
     for split in ('train', 'val'):
         prior = {row['patient_id']: row for row in prepared['source_provenance'][split]}
         for index, record in enumerate(data.records_for(manifest, split), 1):
             alias = f'{split}_{index:02d}'
-            if source_root:
-                record = bind_record(record, source_root)
-            loader = load_bound_case if source_root else data.load_case
-            image, _, _, labels, _ = loader(record, root, prior[record['patient_id']], alias)
-            for sample in (s for s in prepared['samples'][split] if s['case'] == alias):
+            samples = [s for s in prepared['samples'][split] if s['case'] == alias]
+            if verified_cache:
+                from fsdp_verified_cache import read_image, source_label
+                image = read_image(record, root, prior[record['patient_id']], samples)
+            else:
+                if source_root:
+                    record = bind_record(record, source_root)
+                loader = load_bound_case if source_root else data.load_case
+                image, _, _, labels, _ = loader(record, root, prior[record['patient_id']], alias)
+            for sample in samples:
                 previous = sample['sam_grid']
                 size, step = np.asarray(previous['size']), np.asarray(previous['spacing'])
                 center = np.asarray(previous['origin']) + (size - 1) * step / 2
@@ -52,7 +58,7 @@ def replace_contexts(prepared, args):
                 grid = {'size': [256] * 3, 'spacing': spacing.tolist(),
                         'origin': (center - 255 * spacing / 2).tolist(), 'direction': previous['direction']}
                 value = 1 if sample['side'] == 'RFSDP' else 9
-                binary = data.image_xyz((labels == value).astype(np.uint8), data.geometry(image))
+                binary = source_label(sample, image) if verified_cache else data.image_xyz((labels == value).astype(np.uint8), data.geometry(image))
                 support = data.sitk.Image(image.GetSize(), data.sitk.sitkUInt8) + 1
                 support.CopyInformation(image)
                 target = data.xyz(data.resample(binary, grid, data.sitk.sitkNearestNeighbor, pixel=data.sitk.sitkUInt8))
@@ -144,6 +150,7 @@ def gradient_probe(model, prepared, args, config, criterion):
 def finish_audit(model, prepared, args, config, threshold, training, validation, probe):
     score = validation['refined'][5][threshold]['metrics']['mean_bilateral_patient_dice']
     summary = {'complete': True, 'stage': 'resolution_audit', 'experiment': 'FSDP_foundation_resolution',
+        'target_recovery': config.get('target_recovery'),
         'resolution': config['resolution'], 'foundation_reproduced_before_adaptation': True,
         'candidate_train_threshold': threshold,
         'candidate_train': {str(k): training['refined'][k][threshold]['metrics'] for k in (1, 5)},

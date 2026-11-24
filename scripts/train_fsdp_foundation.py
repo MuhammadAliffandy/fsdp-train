@@ -29,7 +29,7 @@ def recipe_values(config):
     return result
 
 
-def inspect_foundation(folder, source_root=None):
+def inspect_foundation(folder, source_root=None, verified_cache=False):
     folder = folder.resolve()
     config, summary = [data.read(folder / name) for name in ('config.json', 'summary.json')]
     score = summary['best_validation_metrics']['5']['mean_bilateral_patient_dice']
@@ -40,7 +40,11 @@ def inspect_foundation(folder, source_root=None):
             or summary['detail_feature_grid'] != [32] * 3 or summary['sam_token_grid'] != [8] * 3
             or summary['oracle_clicks_per_side'] != [1, 5]):
         raise ValueError('Expected the completed45.63%FSDP foundation; refusing another run')
-    check_folder(folder, source_root)
+    if verified_cache:
+        from fsdp_verified_cache import image_inventory, require_images
+        require_images(image_inventory(data.read(folder / 'source_provenance.json'), source_root))
+    else:
+        check_folder(folder, source_root)
     for name, expected in (('hybrid_best.pth', FOUNDATION_SHA256), ('hybrid_data.pt', config['cache_sha256'])):
         print(f'Checking unchanged foundation {name}', flush=True)
         if file_hash(folder / name) != expected:
@@ -70,7 +74,8 @@ def inspect_foundation(folder, source_root=None):
 
 def prepare_foundation(args):
     source_root = getattr(args, 'source_root', None)
-    old, summary = inspect_foundation(args.foundation_run_dir, source_root)
+    verified_cache = getattr(args, 'verified_cache', False)
+    old, summary = inspect_foundation(args.foundation_run_dir, source_root, verified_cache)
     if (views.source_hashes(args.sam_dir) != old['sam_source_sha256']
             or file_hash(args.checkpoint) != old['turbo_sha256']):
         raise ValueError('Original Turbo source/checkpoint differs from foundation')
@@ -81,12 +86,24 @@ def prepare_foundation(args):
     if prepared['policy'] != old['physical_policy']:
         raise ValueError('Foundation cache physical policy differs')
     original_sources = prepared['source_provenance']
-    bound_sources = bind_sources(original_sources, source_root)
-    source_check = inventory(bound_sources, verify=True)
+    if verified_cache:
+        from fsdp_verified_cache import image_inventory, require_images, validate_targets
+        control = data.read(Path(old['cohort_run_dir']) / 'config.json')
+        manifest = data.read(Path(control['data_dir']) / 'manifest.json')
+        cache_check = validate_targets(prepared, manifest)
+        data.save(args.run_dir / 'cache_target_verification.json', cache_check)
+        source_check = image_inventory(original_sources, source_root, verify=True)
+        bound_sources = original_sources
+    else:
+        bound_sources = bind_sources(original_sources, source_root)
+        source_check = inventory(bound_sources, verify=True)
     source_check['source_root_override'] = str(source_root) if source_root else None
-    source_check['authority'] = 'checksums from the original verified cache; only paths may be rebound'
+    source_check['authority'] = ('CT hashes and binary targets from original verified cache; original annotation files not verified'
+        if verified_cache else 'checksums from the original verified cache; only paths may be rebound')
     data.save(args.run_dir / 'source_verification.json', source_check)
-    if not source_check['ready']:
+    if verified_cache:
+        require_images(source_check)
+    elif not source_check['ready']:
         raise ValueError(problem_message(source_check))
     prepared['source_provenance'] = bound_sources
     if len(prepared['patients']['train']) != 54 or len(prepared['patients']['val']) != 10:
@@ -117,6 +134,12 @@ def prepare_foundation(args):
             f'{spec["detail_feature_shape"]}CNNfusion, original prompt/mask decoder and residual/full/half skips')
         for name in ('fsdp_resolution.py', 'sam_refine_resolution.py', 'multiclass_model.py'):
             config['code_sha256'][name] = file_hash(Path(__file__).with_name(name))
+    if verified_cache:
+        config['target_recovery'] = {'mode': 'verified_cache', 'target_cache_sha256': old['cache_sha256'],
+            'original_annotation_files_verified': False, 'cache_targets_verified': cache_check,
+            'source_image_hashes_verified': True,
+            'limitation': 'Uses original cached binary FSDP targets; does not restore original17-class labels or ColorTables.'}
+        config['code_sha256']['fsdp_verified_cache.py'] = file_hash(Path(__file__).with_name('fsdp_verified_cache.py'))
     if args.resume:
         if data.read(args.run_dir / 'config.json') != config:
             raise ValueError('Continuation configuration/code/foundation changed')
@@ -162,6 +185,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--foundation-run-dir', type=Path, required=True)
     parser.add_argument('--source-root', type=Path, help='Relocated dataset root; all source hashes must match the foundation')
+    parser.add_argument('--verified-cache', action='store_true', help='Use checksum-verified cached targets; original CT hashes remain required')
     parser.add_argument('--run-dir', type=Path)
     parser.add_argument('--epochs', type=int, default=100, help='Additional epochs')
     parser.add_argument('--lr-multiplier', type=float, default=.2)
@@ -175,9 +199,9 @@ def main():
     args.foundation_run_dir = args.foundation_run_dir.expanduser().resolve()
     if args.source_root:
         args.source_root = args.source_root.expanduser().resolve()
-    old, _ = inspect_foundation(args.foundation_run_dir, args.source_root)
+    old, _ = inspect_foundation(args.foundation_run_dir, args.source_root, args.verified_cache)
     if args.check_only:
-        print('Foundation weights/cache/source/split/package checks passed; no model or image tensors loaded', flush=True)
+        print('Foundation weights/cache/source-presence/split/package checks passed; target/content verification follows in preparation; no tensors loaded', flush=True)
         return
     if (args.run_dir is None or args.epochs < 1 or args.patience_epochs < 0
             or not math.isfinite(args.lr_multiplier) or not 0 < args.lr_multiplier < 1):

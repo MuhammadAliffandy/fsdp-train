@@ -474,6 +474,8 @@ def execute(args):
             validation_change_vs_foundation=best - foundation['expected_validation']['5']['mean_bilateral_patient_dice'],
             selection_includes_unchanged_foundation=True,
             optimizer_protocol='fresh optimizer and lower-LR schedule; inherited best model weights; additional epoch0 is unchanged foundation')
+    if config.get('target_recovery'):
+        summary['target_recovery'] = config['target_recovery']
     if resolution:
         from fsdp_resolution import update_summary
         update_summary(summary, model, config, prepared)
@@ -484,6 +486,9 @@ def execute(args):
         package.add(output, arcname='results')
         for name in ('history.csv', 'config.json', 'preflight.json'):
             package.add(run / name, arcname='results/' + name)
+        for name in ('cache_target_verification.json', 'source_verification.json'):
+            if (run / name).exists():
+                package.add(run / name, arcname='results/' + name)
     data.save(run / 'summary.json', summary)
     data.save(run / 'progress.json', summary)
     print(json.dumps(summary, indent=2), flush=True)

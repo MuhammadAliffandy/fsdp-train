@@ -15,6 +15,11 @@ COMMAND=(python -u "$PROJECT_DIR/scripts/train_fsdp_foundation.py"
   --foundation-run-dir "$BASE" --run-dir "$RUN" --epochs "${ADDITIONAL_EPOCHS:-100}"
   --lr-multiplier "${LR_MULTIPLIER:-0.2}" --patience-epochs "${PATIENCE_EPOCHS:-50}" --device cuda:0)
 if [[ -n "${FSDP_SOURCE_ROOT:-}" ]]; then COMMAND+=(--source-root "$FSDP_SOURCE_ROOT"); fi
+case "${FSDP_VERIFIED_CACHE:-0}" in
+  0) ;;
+  1) COMMAND+=(--verified-cache) ;;
+  *) echo "FSDP_VERIFIED_CACHE must be0or1." >&2; exit 2 ;;
+esac
 case "${RESUME:-0}" in
   0) if [[ -e "$RUN" ]]; then echo "Run exists; choose a new name." >&2; exit 1; fi ;;
   1)

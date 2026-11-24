@@ -17,6 +17,21 @@ from train_private_unet import state_hash
 
 
 class WorkflowTests(unittest.TestCase):
+    def test_verified_cache_mode_still_stops_before_children_if_ct_is_missing(self):
+        from test_audit_foundation_sources import fixture as source_fixture
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            provenance = source_fixture(root / 'data')
+            (root / 'base').mkdir()
+            data.save(root / 'base/source_provenance.json', provenance)
+            Path(provenance['train'][0]['source_image']).unlink()
+            args = argparse.Namespace(foundation_run_dir=root / 'base', run_dir=root, train=True, verified_cache=True)
+            with patch.object(workflow, 'inspect_foundation') as foundation, patch.object(workflow, 'run_child') as child:
+                with self.assertRaisesRegex(ValueError, 'CT inputs unavailable'):
+                    workflow.execute(args)
+            foundation.assert_not_called(); child.assert_not_called()
+            self.assertFalse(data.read(root / 'source_precheck.json')['ready'])
+
     def test_missing_label_stops_before_loading_foundation_or_launching_any_child(self):
         from test_audit_foundation_sources import fixture as source_fixture
         with tempfile.TemporaryDirectory() as folder:
@@ -115,9 +130,11 @@ class WorkflowTests(unittest.TestCase):
                 data.save(target / 'summary.json', summary)
                 return argparse.Namespace(returncode=0)
             args.source_root = root / 'actual data'
+            args.verified_cache = True
             child_run = run
             def run(command):
                 self.assertEqual(command[command.index('--source-root') + 1], str(args.source_root))
+                self.assertIn('--verified-cache', command)
                 return child_run(command)
             with patch.object(workflow, 'inspect_foundation'), patch.object(workflow, 'run_child', run):
                 workflow.execute(args)
@@ -126,6 +143,7 @@ class WorkflowTests(unittest.TestCase):
             train = [r for r in summary['entries'] if r['stage'] == 'train']
             self.assertAlmostEqual(train[1]['delta_vs_finetuned_baseline'], .05)
             self.assertFalse(summary['test_images_read'])
+            self.assertFalse(summary['original_annotation_files_verified'])
 
 
 if __name__ == '__main__':

@@ -1109,3 +1109,21 @@ tail -n 80 -f logs/fsdp_resolution/latest.log
 ```
 
 The same environment variable is supported by the foundation continuation and recovery launchers. It is forwarded to every child, used for source verification and direct original-CT context sampling, and recorded in new run metadata. Role folders may be symlinks. Original cache tensors, source checksums, manifests, checkpoints and historical metadata are not rewritten. Preparation checks actual bytes against provenance inside the checksum-verified cache; an empty or different root stops before training. Keep the failed run for diagnostics. This command audits only by default; training still requires `RUN_TRAINING=1` and every audit passing.
+
+### Continue from verified cached FSDP targets when original annotations are unavailable
+
+DGX subsequently confirmed that `~/raid/normal case_86` resolves to `/raid/<account>/normal case_86`, with84CTfiles but empty `labelsTr` and `ColorTable`folders. The original foundation cache checksum still matches its recorded config, with108train and20validation side targets intact. This establishes cache availability, not restoration of the original annotation files.
+
+Explicit `FSDP_VERIFIED_CACHE=1` uses that checksum-verified cache as the binary FSDP target authority. Default mode still requires the original annotations. Recovery verifies the pinned full hybrid checkpoint, cache checksum, frozen54/10/20manifest, versions, policy and original model/data implementations. It then checks exact patient/side membership, cached model/context target support, full native foreground and equality of the two native side masks with every cached bilateral patient target. All64original CTs must still match the source hashes inside the verified cache. No expert annotations or pseudo-labels replace the targets, and no dataset/cache/checkpoint files are rewritten.
+
+For16³token variants, cached native side masks are placed at their original voxel offsets in a transient original-CT grid, then resampled to the same physical256³context. CT is sampled directly from its verified original file. This avoids upsampling the old128³context or reconstructing a native target from a resampled mask. Cached detail tensors, native scoring targets, normalization, ROI, split and five-click protocol remain unchanged. Every child must still reproduce the45.63%foundation before adaptation or optimizer updates.
+
+Run audit followed automatically by all four controlled training variants:
+
+```bash
+cd ~/raid/Clara/fsdp-train && git pull --ff-only origin main && conda activate fsdp-med3d && \
+FSDP_SOURCE_ROOT="$HOME/raid/normal case_86" FSDP_VERIFIED_CACHE=1 RUN_TRAINING=1 \
+bash scripts/launch_fsdp_resolution_nohup.sh
+```
+
+Monitor `logs/fsdp_resolution/latest.log`. Omit `RUN_TRAINING=1` for audit only. The same cache option is supported by foundation/recovery launchers and by `--verified-cache` on their Python entry points. Resume requires the original cache mode/root/config/source revision. `cache_target_verification.json`, `source_verification.json`, configs and summaries record the target authority and explicitly state that original annotation files were not verified. A missing/changed CT, bad cache, target mismatch, failed foundation reproduction or failed audit prevents subsequent training. No test CTs/targets are loaded; this mode does not recover the original17-class annotation files, ColorTables or the20reserved test annotations.

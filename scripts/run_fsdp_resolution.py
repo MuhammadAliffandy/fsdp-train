@@ -36,16 +36,24 @@ def run_child(command):
 
 def execute(args):
     source_root = getattr(args, 'source_root', None)
-    sources = inventory(bind_sources(data.read(args.foundation_run_dir / 'source_provenance.json'), source_root))
+    verified_cache = getattr(args, 'verified_cache', False)
+    provenance = data.read(args.foundation_run_dir / 'source_provenance.json')
+    if verified_cache:
+        from fsdp_verified_cache import image_inventory, require_images
+        sources = image_inventory(provenance, source_root)
+    else:
+        sources = inventory(bind_sources(provenance, source_root))
     sources['source_root_override'] = str(source_root) if source_root else None
     data.save(args.run_dir / 'source_precheck.json', sources)
-    if not sources['ready']:
+    if verified_cache:
+        require_images(sources)
+    elif not sources['ready']:
         raise ValueError(problem_message(sources))
-    inspect_foundation(args.foundation_run_dir, source_root)
+    inspect_foundation(args.foundation_run_dir, source_root, verified_cache)
     code = Path(__file__).resolve().parent
     tracked = ('train_sam_refine32.py', 'train_fsdp_foundation.py', 'sam_refine32.py', 'sam_refine_data.py',
                'sam_refine_resolution.py', 'fsdp_resolution.py', 'physical_fsdp.py', 'multiclass_model.py',
-               'run_fsdp_resolution.py', 'audit_foundation_sources.py')
+               'run_fsdp_resolution.py', 'audit_foundation_sources.py', 'fsdp_verified_cache.py')
     signature = {name: file_hash(code / name) for name in tracked}
     data.save(args.run_dir / 'workflow_code_sha256.json', signature)
     entries = []
@@ -61,6 +69,8 @@ def execute(args):
                 '--patience-epochs', str(args.patience_epochs), '--device', args.device]
             if source_root:
                 command.extend(['--source-root', str(source_root)])
+            if verified_cache:
+                command.append('--verified-cache')
             if stage == 'audit':
                 command.append('--audit-only')
             print(f'Starting {stage}: {variant}; outputs={child}', flush=True)
@@ -97,6 +107,8 @@ def execute(args):
             if entry['stage'] == 'train':
                 entry['delta_vs_finetuned_baseline'] = entry['best_val']['5']['mean_bilateral_patient_dice'] - baseline
     report = {'complete': True, 'training_requested': args.train, 'entries': entries,
+        'target_source': 'original_verified_cache' if verified_cache else 'original_files_and_cache',
+        'original_annotation_files_verified': not verified_cache,
         'foundation': str(args.foundation_run_dir), 'test_images_read': False, 'validation_images_read': True,
         'interpretation': 'Matched binary interactive FSDP variants from one trained checkpoint; audit has no optimizer updates. '
             'Resolution is not selected automatically. Validation scores are GT-assisted;20test patients reserved.'}
@@ -104,13 +116,14 @@ def execute(args):
     report['archive'] = str(archive)
     data.save(args.run_dir / 'report.json', report)
     with tarfile.open(archive, 'w:gz') as package:
-        for name in ('report.json', 'workflow_config.json', 'workflow_code_sha256.json'):
+        for name in ('report.json', 'workflow_config.json', 'workflow_code_sha256.json', 'source_precheck.json'):
             if (args.run_dir / name).exists():
                 package.add(args.run_dir / name, arcname='results/' + ('summary.json' if name == 'report.json' else name))
         for entry in entries:
             folder = Path(entry['directory'])
             names = ('summary.json', 'config.json', 'resolution_probe.json', 'foundation_reproduction.json',
-                     'weight_preservation.json', 'train_5_sides.csv', 'val_5_sides.csv', 'overlays') if entry['stage'] == 'audit' else ('results.tar.gz',)
+                     'weight_preservation.json', 'source_verification.json', 'cache_target_verification.json',
+                     'train_5_sides.csv', 'val_5_sides.csv', 'overlays') if entry['stage'] == 'audit' else ('results.tar.gz',)
             for name in names:
                 if (folder / name).exists():
                     package.add(folder / name, arcname=f'results/{entry["stage"]}/{entry["variant"]}/{name}')
@@ -123,6 +136,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--foundation-run-dir', type=Path, required=True)
     parser.add_argument('--source-root', type=Path)
+    parser.add_argument('--verified-cache', action='store_true')
     parser.add_argument('--run-dir', type=Path, required=True)
     parser.add_argument('--train', action='store_true')
     parser.add_argument('--epochs', type=int, default=100)
