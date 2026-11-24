@@ -120,7 +120,8 @@ def prepare(args):
 def run_sample(model, sample, device, seed, criterion=None, augment=False, auxiliary_weight=.25):
     tensors = views.paired_inputs(sample, device, seed if augment else None)
     with torch.autocast(device_type=device.type, enabled=device.type == 'cuda', dtype=getattr(model, 'amp_dtype', torch.bfloat16)):
-        return interactions(model, tensors['image'], tensors['sam_image'], tensors['ratio'], tensors['spacing'],
+        interaction = getattr(model, 'interaction_function', interactions)
+        return interaction(model, tensors['image'], tensors['sam_image'], tensors['ratio'], tensors['spacing'],
             tensors['target'], tensors['valid'], (1, 5), seed, criterion,
             tensors['sam_target'], tensors['sam_valid'], auxiliary_weight)
 
@@ -310,6 +311,10 @@ def execute(args):
         load_foundation_weights(model, args, config)
     model = model.to(device)
     model.amp_dtype = torch.bfloat16 if args.precision == 'bf16' else torch.float16
+    resolution = config.get('resolution')
+    if resolution:
+        from fsdp_resolution import setup
+        model, prepared = setup(model, prepared, args, config)
     initial_hash = state_hash(model.state_dict())
     sam_parameters = list(model.sam.parameters())
     new_parameters = [p for name, p in model.named_parameters() if not name.startswith('sam.')]
@@ -351,7 +356,18 @@ def execute(args):
                 'cuda_rng_state': torch.cuda.get_rng_state_all() if device.type == 'cuda' else []}
     if not args.resume:
         threshold, training, validation = calibrate_validate(model, prepared, device, args.seed)
-        if foundation:
+        probe = None
+        if resolution:
+            from fsdp_resolution import gradient_probe, finish_audit
+            if resolution['variant'] == 'baseline':
+                from train_fsdp_foundation import verify_reproduction
+                verify_reproduction(threshold, training, validation, foundation)
+            probe = gradient_probe(model, prepared, args, config, criterion)
+            if getattr(args, 'audit_only', False):
+                summary = finish_audit(model, prepared, args, config, threshold, training, validation, probe)
+                print(json.dumps(summary, indent=2), flush=True)
+                return
+        elif foundation:
             from train_fsdp_foundation import verify_reproduction
             verify_reproduction(threshold, training, validation, foundation)
         else:
@@ -367,8 +383,11 @@ def execute(args):
         initial = {'threshold_from_train': threshold, 'train': training['refined'][5][threshold]['metrics'],
                    'val': validation['refined'][5][threshold]['metrics']}
         data.save(run / 'preflight.json', {'passed': True, 'original_turbo_weights_unchanged_on_wrap': True,
-            'initial_turbo_state_sha256': turbo_hash, 'detail_feature_grid': [32] * 3, 'sam_token_grid': [8] * 3,
+            'initial_turbo_state_sha256': turbo_hash,
+            'detail_feature_grid': resolution['detail_feature_shape'] if resolution else [32] * 3,
+            'sam_token_grid': [resolution['token_grid']] * 3 if resolution else [8] * 3,
             'initial_component_reproduces': not bool(foundation), 'foundation_reproduces': bool(foundation),
+            'resolution': resolution, 'resolution_probe': probe,
             'foundation': foundation, 'initial_metrics': initial, 'coverage': prepared['coverage'],
             'parameter_counts': {'turbo': sum(p.numel() for p in sam_parameters), 'new': sum(p.numel() for p in new_parameters)},
             'test_images_read': False})
@@ -455,6 +474,9 @@ def execute(args):
             validation_change_vs_foundation=best - foundation['expected_validation']['5']['mean_bilateral_patient_dice'],
             selection_includes_unchanged_foundation=True,
             optimizer_protocol='fresh optimizer and lower-LR schedule; inherited best model weights; additional epoch0 is unchanged foundation')
+    if resolution:
+        from fsdp_resolution import update_summary
+        update_summary(summary, model, config, prepared)
     archive = run / 'results.tar.gz'
     summary['archive'] = str(archive)
     data.save(output / 'summary.json', summary)

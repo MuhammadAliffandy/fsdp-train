@@ -1030,3 +1030,55 @@ Stopping verifies process owner, script, run directory/config, PID start time an
 ```bash
 RESUME=1 FSDP_FOUNDATION_RUN_NAME=fsdp_private_foundation_ORIGINAL_NAME bash scripts/launch_fsdp_foundation_nohup.sh
 ```
+
+## FSDP resolution audit: retain the trained SAM decoder and CNN
+
+`launch_fsdp_resolution_nohup.sh` tests four binary FSDP variants initialized from the complete45.63%hybrid checkpoint. The default performs readiness audits only, with zero optimizer updates:
+
+| Variant | Encoder tokens | CNN fusion | SAM coarse mask |
+| --- | --- | --- | --- |
+| `baseline` |8³|32³|32³|
+| `detail` |8³|Native half ROI (48×80×104for the successful96×160×208ROI)|32³|
+| `tokens` |16³|32³|64³|
+| `combined` |16³|Native half ROI|64³|
+
+Each child first loads the original complete trained hybrid and reproduces its full54train/10validation@1/@5scores, selected0.35threshold and fixed0.5control. It then constructs the variant, strictly reloads all trained parameter names, and verifies every tensor is identical except the declared absolute-position8³→16³interpolation. No decoder is replaced with a random semantic head. Native-half fusion uses existing learned features directly; the full/half-resolution skips and trained residual output remain. Point maps retain1mmphysical Gaussian scale on rectangular grids.
+
+Token16variants resample the original CT directly at256³over the same side-context center and physical field. Detail CT, masks, validity, spacing, source labels, normalization and ROI cache remain unchanged. The prompt coordinates normalize to256, dense positional encoding and mask embeddings align at16³, and actual mask feedback/output becomes64³. Original patch16³kernel, attention/relative-position parameters, SAM prompt/mask decoder and all CNN weights are inherited. Encoder block checkpointing reduces saved activations, while larger attention/fusion still require actual GPU profiling. Denser sampling cannot restore detail absent from the source CT.
+
+After adaptation, each audit measures train/validation@1/@5under the same oracle policy, train-calibrated and fixed0.5validation scores, feature dimensions, physical detail-cell spacing, finite gradients through selected encoder blocks/mask decoder/CNN, GPU peak allocated memory, and an unchanged model hash before/after the gradient probe. It exports all20validation-side overlays/native masks and CSVs, and verifies exported scores. This uses validation images for diagnostics, never the20test images. It is not a train-only or automatic segmentation evaluation. Candidate audit scores are before fine-tuning, and changes are not reported as established training improvements.
+
+Audit on a free DGX GPU:
+
+```bash
+cd ~/raid/Clara/fsdp-train && git pull --ff-only origin main && conda activate fsdp-med3d && bash scripts/launch_fsdp_resolution_nohup.sh
+```
+
+Use `GPU_ID=1`before`bash`to select another GPU. This launcher does not stop other jobs. Monitor:
+
+```bash
+tail -n 80 -f logs/fsdp_resolution/latest.log
+python -m json.tool outputs/private/fsdp_resolution/latest/progress.json
+python -m json.tool outputs/private/fsdp_resolution/latest/audit/detail/resolution_probe.json
+python -m json.tool outputs/private/fsdp_resolution/latest/summary.json
+```
+
+SIGTERM or SIGINT sent to the workflow PID is forwarded to its active child; the workflow waits up to30seconds and starts no further stage after interruption.
+
+Child folders also contain `foundation_reproduction.json`, `weight_preservation.json`, `config.json`, initial metrics and `overlays/`. Baseline reproduction happens before adaptation; a changed-resolution model is not required or assumed to immediately retain45.63%Dice. A failed reproduction, invalid gradient, OOM or other audit failure is recorded and prevents the subsequent training stage. The workflow collects the other audit variants so failures can be compared. It never lowers resolution, drops cases or selects a variant from validation automatically.
+
+To perform all audits and then the matched fine-tuning comparison in one unattended workflow:
+
+```bash
+RUN_TRAINING=1 bash scripts/launch_fsdp_resolution_nohup.sh
+```
+
+Only after all four audits pass does this start four independent continuations, including an unchanged-resolution lower-LR control. Each inherits the same original45.63%checkpoint, uses the same source recipe, rates×0.2,100additional epoch cap,50epoch patience and FSDP-based selection. Each training child reruns its own preflight. Both delta versus the original foundation and delta versus the fine-tuned baseline control are reported. Adapted epoch0is a candidate for its own variant; the original foundation remains in its original directory and a worse variant is not promoted over it. Full workflow runtime and full-size DGX memory are not established locally.
+
+The parent `results.tar.gz`contains audit metadata/overlays and, when requested, per-variant training result archives; weights/caches are excluded. Download from the local terminal:
+
+```bash
+scp 'D13K48009@DGXH100:~/raid/Clara/fsdp-train/outputs/private/fsdp_resolution/latest/results.tar.gz' ./fsdp_resolution_results.tar.gz
+```
+
+Start a new parent run for this revision. Individual unfinished training children can resume through `train_fsdp_foundation.py --resume`with the original child path, foundation, resolution variant and exact settings/source. The parent workflow itself has no resume mode. An unfinished continuation from an earlier source revision fails its existing resume guard; completed successful foundation artifacts remain reusable.

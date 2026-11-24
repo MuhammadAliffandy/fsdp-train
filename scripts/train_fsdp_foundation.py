@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Continue the verified FSDP45.63% hybrid without changing its ROI or architecture."""
+"""Continue the verified FSDP hybrid, optionally auditing compatible resolution variants."""
 import argparse
 import importlib.metadata
 import math
@@ -95,6 +95,16 @@ def prepare_foundation(args):
             'expected_train': summary['best_frozen_training_metrics'], 'expected_validation': summary['best_validation_metrics'],
             'expected_validation_fixed_0_5': summary['validation_control_fixed_0_5'],
             'change': 'inherit full best hybrid weights and exact cached ROI/normalization; fresh optimizer at LR multiplier; same active groups as source best epoch'})
+    if getattr(args, 'resolution_variant', None):
+        from fsdp_resolution import configuration
+        config['resolution'] = configuration(args, old)
+        config['experiment'] = 'sam_turbo_fsdp_resolution'
+        config['foundation_architecture'] = config['architecture']
+        spec = config['resolution']
+        config['architecture'] = (f'Trained binary SAM with{spec["token_grid"]}cube tokens, '
+            f'{spec["detail_feature_shape"]}CNNfusion, original prompt/mask decoder and residual/full/half skips')
+        for name in ('fsdp_resolution.py', 'sam_refine_resolution.py', 'multiclass_model.py'):
+            config['code_sha256'][name] = file_hash(Path(__file__).with_name(name))
     if args.resume:
         if data.read(args.run_dir / 'config.json') != config:
             raise ValueError('Continuation configuration/code/foundation changed')
@@ -144,6 +154,8 @@ def main():
     parser.add_argument('--device', default='cuda:0')
     parser.add_argument('--resume', action='store_true')
     parser.add_argument('--check-only', action='store_true')
+    parser.add_argument('--resolution-variant', choices=('baseline', 'detail', 'tokens', 'combined'))
+    parser.add_argument('--audit-only', action='store_true')
     args = parser.parse_args()
     args.foundation_run_dir = args.foundation_run_dir.expanduser().resolve()
     old, _ = inspect_foundation(args.foundation_run_dir)
@@ -153,6 +165,8 @@ def main():
     if (args.run_dir is None or args.epochs < 1 or args.patience_epochs < 0
             or not math.isfinite(args.lr_multiplier) or not 0 < args.lr_multiplier < 1):
         parser.error('Need a new run directory, positive additional epochs and LR multiplier in(0,1)')
+    if args.audit_only and (args.resolution_variant is None or args.resume):
+        parser.error('Audit-only requires a resolution variant and a new run')
     args.run_dir = args.run_dir.expanduser().resolve()
     args.sam_dir, args.checkpoint, args.cohort_run_dir = [Path(old[k]).resolve() for k in ('sam_dir', 'checkpoint', 'cohort_run_dir')]
     for key, value in recipe_values(old).items():
