@@ -1222,3 +1222,17 @@ python scripts/fsdp_research_resources.py --output outputs/private/fsdp_research
 ```
 
 This snapshot cannot recover the dead process's historical exit code. After pulling the diagnostic changes, use a new default research run name with `RESUME=0`; the frozen foundation/cache/ROI and scientific recipe remain unchanged. An existing resolution run continues independently.
+
+### Switch the active resolution workflow to sequential research
+
+To prioritize research immediately, the switch helper verifies the tracked resolution parent against its owner, PID start time, exact project script, run directory and workflow config. It records the physical GPU from that parent's CUDA mapping, sends SIGTERM only to the verified parent (which forwards stop signals to its child), and waits for both parent and scoped children to exit. It does not send SIGKILL or stop other jobs. If shutdown cannot be verified, research is not launched. Existing resolution checkpoints/logs remain; work since the last completed checkpoint is not saved by this stop helper. The interrupted resolution workflow does not automatically resume later.
+
+Run on DGX:
+
+```bash
+cd ~/raid/Clara/fsdp-train && git pull --ff-only origin main && conda activate fsdp-med3d && \
+FSDP_SOURCE_ROOT="$HOME/raid/normal case_86" FSDP_VERIFIED_CACHE=1 \
+bash scripts/switch_fsdp_resolution_to_research.sh
+```
+
+The switch creates a fresh research workflow on the released GPU, using the same45.63%foundation and default20additional epochs per arm. It explicitly clears `EXCLUDE_GPU_IDS` for this launch so the released GPU0can be reused; unset exclusions still default to0for ordinary research launches. Existing memory headroom and40GiBallocator safeguards remain, and shared-capacity mode defaults to enabled for this switch without stopping any co-resident jobs. It can be set to strict mode with `ALLOW_GPU_SHARING=0`. No successful launch is guaranteed if that GPU lacks the required free capacity. A timestamped stop record under `outputs/private/stops` includes the target, children, GPU and retained checkpoint file paths/sizes. If the tracked resolution workflow already exited, the helper sends no signal and stops; use the ordinary research launcher after inspecting GPU capacity.

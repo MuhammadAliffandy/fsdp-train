@@ -36,7 +36,7 @@ if [[ -f "$LOG/latest.pid" ]] && kill -0 "$(cat "$LOG/latest.pid")" 2>/dev/null;
 fi
 GPU_RECORD="$LOG/$NAME.gpu.json"
 GPU_CHECK=(python "$PROJECT_DIR/scripts/fsdp_research_gpu.py" --gpu-id "${GPU_ID:-1}" --output "$GPU_RECORD"
-  --min-free-gib "${MIN_FREE_GPU_GIB:-48}" --exclude "${EXCLUDE_GPU_IDS:-0}"
+  --min-free-gib "${MIN_FREE_GPU_GIB:-48}" --exclude "${EXCLUDE_GPU_IDS-0}"
   --protect-resolution-run "$PROJECT_DIR/outputs/private/fsdp_resolution/latest")
 case "${ALLOW_GPU_SHARING:-0}" in
   0) ;;
