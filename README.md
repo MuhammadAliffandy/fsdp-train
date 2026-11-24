@@ -1130,4 +1130,56 @@ Monitor `logs/fsdp_resolution/latest.log`. Omit `RUN_TRAINING=1` for audit only.
 
 ### Research plan for the next FSDP experiments
 
-The 24 November research note is in `docs/FSDP_RESEARCH_2026-11-24.md`. It relates primary papers and official implementations to the current hybrid, distinguishes measured results from hypotheses, and proposes controlled prompt-history, boundary-loss and residual-refiner experiments. This is a design proposal; it does not change the active workflow or launch another run.
+The 24 November research note is in `docs/FSDP_RESEARCH_2026-11-24.md`. It relates primary papers and official implementations to the current hybrid, distinguishes measured results from hypotheses, and defines controlled prompt-history, boundary-loss and residual-refiner experiments. The independent implementation is documented below; the active resolution workflow remains unchanged.
+
+### Run a second research pipeline on another GPU
+
+`launch_fsdp_research_nohup.sh` is an independent pipeline. The implementation adds new Python files; existing resolution/foundation/model/data scripts are unchanged, preserving the active resolution parent's code checks. It does not stop, resume or write into the resolution run. Logs, PID files and latest links use `fsdp_research`.
+
+Default physical GPU is1. The launcher queries `nvidia-smi`, refuses a GPU with an existing compute process, records its index/UUID, and sets `CUDA_VISIBLE_DEVICES` to that UUID. The child uses logical `cuda:0` inside that single-device mapping. Select another idle physical index with `GPU_ID`; the check is a launch-time snapshot, not a system-wide reservation. No jobs are killed or GPUs reset.
+
+On DGX, while the resolution pipeline continues on its other GPU:
+
+```bash
+cd ~/raid/Clara/fsdp-train && git pull --ff-only origin main && conda activate fsdp-med3d && \
+GPU_ID=1 FSDP_SOURCE_ROOT="$HOME/raid/normal case_86" FSDP_VERIFIED_CACHE=1 \
+bash scripts/launch_fsdp_research_nohup.sh
+```
+
+The second GPU runs four arms sequentially, each independently initialized from the original full45.63%hybrid:
+
+- `control`: original8³tokens, CNN32³fusion, last sparse point and original objective.
+- `history`: all1…kpoints passed to SAM; previous mask, CNN click maps, sampler, objective and budget retained.
+- `boundary`: original prompts and DiceCE/context loss plus0.05times normalized signed-distance boundary loss;5mmclipping, original physical spacing, padding excluded as a background reference. Distance fields use training targets only and receive exactly the paired LR reflection.
+- `refiner`: original prompts/objective and existing trained paths plus a native-half residual block. Inputs are16half features,8pooled full features,1mask prior and2physical click maps. A27-channel depthwise5³convolution and pointwise27→16mixing feed a zero-initialized16→1output, preserving predictions before learning.
+
+Each arm first verifies checkpoint/cache/source/package/manifest integrity and reproduces the original54train/10validation foundation scores. Existing learned tensors must stay identical during construction. A gradient-only probe verifies finite nonzero gradients through encoder10/11, mask decoder and existing residual head; the refiner arm additionally requires gradients on its new output projection. Inner new-branch gradients may initially be zero because that output projection starts at zero. Control/boundary/refiner must also reproduce foundation metrics after construction; history initial scores are measured separately because the prompt inputs change. Any failed arm stops later arms.
+
+Default screening is20additional epochs per arm,14optimizer updates/epoch on108training ROIs, with the same source rates×0.2, five-epoch LR warmup, cosine schedule over that20epoch cap, original paired augmentation and auxiliary0.25loss. Source epoch30is an offset, not progress toward the20additional cap. This matched20epoch control is distinct from the active100epoch resolution control; their schedules differ. `ADDITIONAL_EPOCHS`, `LR_MULTIPLIER`, `PATIENCE_EPOCHS`, `BOUNDARY_WEIGHT`, `BOUNDARY_CLIP_MM`, `RESEARCH_CPU_THREADS` and `FSDP_FOUNDATION_DIR` are supported. These objective/screening choices are experimental, not guaranteed improvements.
+
+Monitor without interrupting either pipeline:
+
+```bash
+tail -n 80 -f logs/fsdp_research/latest.log
+python -m json.tool outputs/private/fsdp_research/latest/progress.json
+```
+
+Parent progress names the active arm; that arm's `progress.json` and `history.csv` contain current/best validation scores. Every child writes its own config, initialization/reproduction proof, gradient/VRAM preflight, checkpoint history, native validation NIfTI masks/GT, selected-threshold overlays and curves. The selected checkpoint is reloaded and exported Dice is verified on both side and bilateral native masks. Primary PNGs show the selected threshold even when a separate0.5control is also exported. Reports include MONAI symmetric HD95 in mm and subvoxel area-weighted surface Dice at0.5/1mm; these tolerances are diagnostic, not clinical acceptance thresholds. Empty predictions score0surface Dice and have undefined HD95, with explicit counts; they are not silently removed from the report.
+
+`summary.json` with `complete:true` appears only after all four arms and archive creation. It compares against both the original foundation and the matched research control; history also reports change from its own initial prompt-policy score. No resolution or research model is promoted automatically. The original test split remains unread. Per-arm and parent archives exclude weights/caches; they contain private masks and images for SCP.
+
+Resume an interrupted research pipeline with the original run name and identical budget/settings:
+
+```bash
+GPU_ID=1 FSDP_RESEARCH_RUN_NAME=fsdp_research_ORIGINAL_NAME RESUME=1 \
+FSDP_SOURCE_ROOT="$HOME/raid/normal case_86" FSDP_VERIFIED_CACHE=1 \
+bash scripts/launch_fsdp_research_nohup.sh
+```
+
+Completed arms are skipped only after best-checkpoint checksum verification. An unfinished arm requires `research_latest.pth`; resume restores model/optimizer/scheduler/scaler/RNG/history and refuses code/config/data changes. Failure before the first checkpoint requires inspection and a new timestamped workflow. Stop signals sent to this parent are forwarded only to its current research child.
+
+Copy the completed bundle from a local terminal:
+
+```bash
+scp 'D13K48009@DGXH100:~/raid/Clara/fsdp-train/outputs/private/fsdp_research/latest/results.tar.gz' ./fsdp_research_results.tar.gz
+```
