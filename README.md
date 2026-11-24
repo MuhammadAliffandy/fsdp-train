@@ -928,3 +928,41 @@ cd ~/raid/Clara/fsdp-train && git pull --ff-only origin main && conda activate f
 ```
 
 The launcher creates a new timestamped run and log; the old failed run remains available. Successful preprocessing automatically continues to Turbo+CNN training, evaluation and export. Monitor `logs/sam_refine32/latest.log`. Do not resume a checkpoint created by an earlier source revision.
+
+## Train all annotated structures with learned detail64³ and32³
+
+This new workflow predicts17anatomical classes plus background using the pretrained Turbo **image encoder** and a new multiclass CNN decoder. It runs64³learned detail first, then32³with matched initialization/recipe. Global Turbo tokens remain8³. Inputs are local128³patches with high-resolution skips and full-resolution output. The broader anatomical field is GT-union-centered; this is a research segmentation protocol, not automatic full-CT localization.
+
+Run on DGX in one command:
+
+```bash
+cd ~/raid/Clara/fsdp-train && git pull --ff-only origin main && conda activate fsdp-med3d && bash scripts/launch_multiclass_nohup.sh
+```
+
+The background process audits all labels/ColorTables, selects preprocessing on train only, verifies feature/gradient flow, trains each model up to200epochs with early stopping, evaluates selected checkpoints and exports a private result bundle. It uses existing Turbo source/checkpoint and `outputs/private/unet_cohort/latest` as the completed frozen data control; no dependency upgrade or existing training run is needed. All17classes require training examples and consistent mapping; failed checks stop with diagnostics. Clinical annotation completeness still needs expert confirmation. The held-out20test images remain unread.
+
+Monitor and inspect:
+
+```bash
+tail -n 80 -f logs/multiclass/latest.log
+python -m json.tool outputs/private/multiclass/latest/progress.json
+python -m json.tool outputs/private/multiclass/latest/detail64/summary.json
+python -m json.tool outputs/private/multiclass/latest/summary.json
+```
+
+`detail64/summary.json` means the64³experiment is complete; the parent `summary.json` appears only after all requested variants and archive export finish. Each reports macro anatomy Dice **and FSDP separately**. Scores differ in protocol from the earlier binary interactive model. Runtime depends on anatomical field size/GPU and is not guaranteed to finish overnight.
+
+Defaults:64then32,216train patches/epoch,5decoder warmup epochs, original Turbo blocks10/11fine-tuned after warmup, validation every10epochs,50epoch patience. Optional controls:
+
+```bash
+GPU_ID=1 DETAIL_GRIDS="64" bash scripts/launch_multiclass_nohup.sh
+RESUME=1 MULTICLASS_RUN_NAME=fsdp_multiclass_ORIGINAL_NAME bash scripts/launch_multiclass_nohup.sh
+```
+
+Resume requires completed preprocessing and exactly the original settings/source revision. Keep originals and previous runs intact. Once complete, download from your local terminal using the usual DGX hostname/IP:
+
+```bash
+scp 'D13K48009@DGXH100:~/raid/Clara/fsdp-train/outputs/private/multiclass/latest/results.tar.gz' ./multiclass_results.tar.gz
+```
+
+The bundle includes validation masks/overlays, per-class and per-patient CSVs, curves and confusion matrices. Preserve it as private research data.
