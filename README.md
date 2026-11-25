@@ -1295,3 +1295,14 @@ After pulling this diagnostic revision, use a fresh continuation report name/`RE
 ```bash
 python -m json.tool outputs/private/fsdp_resolution_remaining/latest/tokens_signal.json
 ```
+
+### Audit the remaining Dice bottleneck without another GPU run
+
+The history continuation stopped25/100with selected epoch0and unchanged49.18%validation Dice. This does not establish whether its last-epoch training fit increased or remained limited. Inspect the stored artifacts:
+
+```bash
+cd ~/raid/Clara/fsdp-train && git pull --ff-only origin main && \
+python scripts/inspect_fsdp_bottleneck.py --run-dir outputs/private/fsdp_research/latest
+```
+
+The stdlib-only inspector reads summary/config/history and selected native patient CSVs, verifies confusion counts and summary means, separates selected metrics from the measured learning curve, reports FP/FN/volume ratios and per-patient original history/control changes, and shows the physical spacing of fusion/token cells. It does not load images/weights/cache tensors, allocate a GPU, modify training artifacts or read test data. Parent reports may be supplied directly; the history arm is resolved within that parent. A descriptive pattern flag is a hypothesis rather than a causal diagnosis or an automated training decision. The updated research note records conditional experiments and primary sources in `docs/FSDP_RESEARCH_2026-11-24.md`. No40-point gain is promised by increasing epochs, changing threshold or selecting a different metric.

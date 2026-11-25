@@ -2,6 +2,37 @@
 
 Tanggal: 24 November 2026. Status: kontrol dan eksperimen P1/P2/P3 sudah diimplementasikan dalam pipeline kedua; belum dijalankan di DGX dari workspace lokal. Diagnostik P0 dan opsi P4 tetap merupakan agenda lanjutan. Run resolusi DGX yang aktif tetap memakai kode dan konfigurasi semula. Sasaran utama adalah Dice segmentasi pada grid asli, bukan voxel accuracy yang mudah didominasi background.
 
+## Pembaruan 25 November: bukti setelah screening dan kelanjutan history
+
+Bagian24November di bawah adalah catatan keputusan saat itu. Hasil DGX terbaru: control47,75%, history49,18%, boundary47,51%, refiner47,20%validation Dice@5per sisi setelah masing-masing20epoch tambahan. History unggul1,43poin terhadap kontrol screening yang sebanding. Baseline resolution selesai dengan46,51%; detail baru3epoch, tokens/combined belum punya hasil training selesai. SIGTERM menghambat resolution; pengirimnya belum teridentifikasi. Kegagalan proses bukan bukti ketidakmampuan arsitektur tersebut.
+
+Kelanjutan dari history terbaik selesai25/100tambahan dengan early stopping dan best_epoch0. Tidak ada evaluasi berkala yang melampaui sumber49,1836%. Checkpoint terpilih memiliki frozen train53,0151%dan val49,1836%; ini bukan skor train terakhir dari epoch25. Kurva1–25masih diperlukan untuk membedakan divergensi train/val dari hambatan fit pada kedua split. Menambah epoch dengan recipe lanjutan tersebut belum menunjukkan manfaat, tetapi tidak menetapkan bahwa semua LR atau adaptasi encoder gagal.
+
+Kontrol threshold0,5memberi48,6520%, hanya0,5316poin di bawah threshold train0,45. Recall rata-rata56,42%dan precision44,85%menunjukkan bahwa target yang hilang dan prediksi berlebih perlu diperiksa bersama; Dice tidak boleh dihitung ulang sebagai harmonic mean dari kedua rata-rata itu. Surface Dice1mm87,7895%dan0,5mm77,9309%adalah metrik toleransi batas, bukan volumetric Dice80–90%. Jarak permukaan yang relatif dekat adalah petunjuk untuk menguji sensitivitas batas objek tipis, bukan bukti offset registrasi seragam atau anotasi salah.
+
+### Langkah sekarang: audit artifact tanpa training tambahan
+
+`inspect_fsdp_bottleneck.py` memakai stdlib untuk membaca summary/history/patient CSV/config. Tidak ada bobot, citra, cache tensor, GPU atau test image yang dibaca; source artifacts tidak ditulis. Audit memisahkan epoch0, checkpoint terpilih, dan frozen inference pada epoch terakhir yang diukur. Hitungan TP/FP/FN diverifikasi terhadap Dice masing-masing pasien, begitu pula rerata CSV terhadap summary. Original screening history/control dibandingkan berpasangan hanya jika cache/manifest/foundation/physical policy/versions/recipe sama. Anggaran screening20epoch tidak dianggap sebagai kontrol sebanding untuk kelanjutan100epoch.
+
+```bash
+cd ~/raid/Clara/fsdp-train && git pull --ff-only origin main && \
+python scripts/inspect_fsdp_bottleneck.py --run-dir outputs/private/fsdp_research/latest
+```
+
+Laporan memuat kurva train/val dan LR, gap terpilih versus gap akhir, kesalahan dan rasio volume per pasien, keuntungan klik1→5, efek threshold, geometri fitur serta jumlah pasien yang membaik/memburuk terhadap kontrol screening. Flag pola menggunakan ambang deskriptif dan bukan uji statistik atau pemicu training otomatis. Analisis nilai asli dari DGX masih menunggu output audit; hasil sintetik tidak menjadi temuan klinis.
+
+### Keputusan eksperimen berikutnya bersyarat pada audit
+
+1. Jika frozen train terus meningkat tetapi val menurun, uji satu perubahan generalisasi: jitter ROI fisik ringan yang dipasangkan pada CT/GT/context/support dan menjaga target utuh, sementara arsitektur/source/loss tetap. Evaluasi tetap memakai ROI frozen. Tinjau overlay kasus train yang paling salah bersama anotator untuk konsistensi definisi; perubahan anotasi harus terversi dan dibekukan, bukan diedit per kasus demi menaikkan validasi.
+2. Jika train dan val sama-sama sulit meningkat, ulangi tiny-fit pada2pasien train menggunakan persis history49,18%, physical cache dan scoring native saat ini. Nonaktifkan augmentasi pada diagnosis; target90%hanya gerbang memorisasi train, bukan klaim90%validasi. Jika masih gagal, ukur komponen gradien refined versus auxiliary0,25pada parameter SAM yang dipakai bersama; penurunan auxiliary atau perubahan Dice/Tversky baru diuji jika ada bukti arah/norma gradien bermasalah.
+3. Selesaikan tokens16³ dan native-half detail dari studi resolution dengan recipe asal. Model sudah punya full/half skip; fusion32³bukan batas resolusi output. Pembesaran grid adalah hipotesis yang sedang diuji. [SegVol](https://arxiv.org/abs/2311.13385) mendukung kombinasi konteks dan ROI lokal, tetapi proyek ini sudah memiliki dua pandangan; paper itu tidak menetapkan kenaikan40poin pada FSDP ini.
+4. Jika tiny-fit/gradien/geometry sehat tetapi fit cohort masih rendah, uji encoder blocks8–11versus10–11dari source history yang sama pada LR/budget yang sebanding. Ini usulan belum diimplementasikan, bukan janji bahwa lebih banyak parameter akan membantu. Sampler pusat error dalam mm versus uniform juga merupakan policy ablation terpisah; anggaran klik tetap dan kenaikan oracle harus dilabeli dengan benar.
+5. Sebagai pembanding kemudian, gunakan recipe3D CNN yang dikonfigurasi dengan benar, bukan menyebut U-Net sederhana lama sebagai nnU-Net. Cohort U-Net lama mencatat train32,50%/val18,64%dengan preprocessing yang berbeda. [nnU-Net Revisited](https://arxiv.org/abs/2404.09556) mendukung pentingnya baseline/configuration dan anggaran yang sebanding; tidak menjanjikan80%pada FSDP. Pembanding tanpa klik tetap berbeda dari interactive SAM.
+
+Target dari49,18%ke80%masih berjarak30,82poin; tambahan40poin berarti89,18%. Belum ada eksperimen pada definisi target/split ini yang membuktikan kenaikan tersebut dapat dicapai. Tiga folder ahli belum memberikan agreement untuk target FSDP yang terpetakan sama; jangan memakai angka raw-label lama sebagai batas kualitas anotasi. Kurva, audit kesalahan, uji resolusi dan peninjauan anotasi diperlukan untuk menentukan investasi berikutnya.
+
+Sepuluh pasien validasi yang sudah sering dipakai adalah eksploratif. Jika membuat fold konfirmasi di54train, checkpoint49,18%sudah pernah melihat seluruh54pasien sehingga tidak sah untuk menginisialisasi evaluasi held-out fold itu. Mulai fold dari Turbo eksternal dan hitung preprocessing hanya dari inner-train; cache native target yang terverifikasi dapat menjadi sumber target. Test20pasien tetap tidak dibaca dan evaluasi final menunggu anotasi test tersedia serta protokol dibekukan.
+
 ## Keputusan utama
 
 Pertahankan fondasi SAM-Med3D Turbo + refiner CNN, ROI fisik, cache target asli, dan lima klik per sisi. Selesaikan perbandingan resolusi yang sedang berjalan. Setelah itu, prioritaskan eksperimen informasi klik dan objective batas sebelum memperbesar encoder lagi. Semua usulan berikut adalah hipotesis yang perlu diuji pada FSDP; hasil paper pada organ, lesi, atau citra 2D tidak menetapkan bahwa FSDP kita akan mencapai Dice80%.
