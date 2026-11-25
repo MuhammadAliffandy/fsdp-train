@@ -108,10 +108,22 @@ def prepare_foundation(args):
     prepared['source_provenance'] = bound_sources
     if len(prepared['patients']['train']) != 54 or len(prepared['patients']['val']) != 10:
         raise ValueError('Expected exact54/10foundation cohort')
+    excluded = sorted(set(getattr(args, 'exclude_train_alias', []) or []))
+    if set(excluded) - {'train_28'}:
+        raise ValueError('Only train_28 has a confirmed non-CT source diagnosis')
+    provenance = {row['case']: row for row in prepared['source_provenance']['train']}
+    for alias in excluded:
+        if alias not in prepared['patients']['train'] or alias not in provenance:
+            raise ValueError(f'Cannot exclude unknown training case: {alias}')
+    if 'train_28' in excluded and Path(provenance['train_28']['source_image']).name != '6220173.nii.gz':
+        raise ValueError('train_28 no longer maps to the diagnosed 6220173 input')
+    prepared['excluded_train_aliases'] = excluded
     config = {key: str(v) if isinstance(v, Path) else v for key, v in vars(args).items() if key != 'resume'}
     config.update(experiment='sam_turbo_cnn_refine32_foundation', versions=old['versions'],
         architecture=old['architecture'], protocol=old['protocol'], loss=old['loss'], prompts=old['prompts'],
-        augmentation_protocol=old['augmentation'], threshold_protocol=old['threshold_protocol'],
+        augmentation_protocol=old['augmentation'], threshold_protocol=(
+            'recalibrate on retained training patients only; validation does not select threshold'
+            if excluded else old['threshold_protocol']),
         selection=old['selection'], physical_policy=prepared['policy'], cache_sha256=old['cache_sha256'],
         manifest_sha256=old['manifest_sha256'], test_images_read=False,
         code_sha256={name: file_hash(Path(__file__).with_name(name)) for name in (*trainer.CODE_FILES,
@@ -124,6 +136,13 @@ def prepare_foundation(args):
             'expected_train': summary['best_frozen_training_metrics'], 'expected_validation': summary['best_validation_metrics'],
             'expected_validation_fixed_0_5': summary['validation_control_fixed_0_5'],
             'change': 'inherit full best hybrid weights and exact cached ROI/normalization; fresh optimizer at LR multiplier; same active groups as source best epoch'})
+    if excluded:
+        config['training_inclusion'] = {
+            'original_train_patients': 54, 'active_train_patients': 54 - len(excluded),
+            'excluded_aliases': excluded,
+            'reason': {'train_28': 'source image contains a 0-14 integer label map, not CT intensities'},
+            'cache_and_frozen_manifest_modified': False,
+            'foundation_checkpoint_exposure': 'Inherited weights were trained with this input; exclusion applies to continuation only.'}
     if getattr(args, 'resolution_variant', None):
         from fsdp_resolution import configuration
         config['resolution'] = configuration(args, old)
@@ -165,7 +184,20 @@ def load_foundation_weights(model, args, config):
     print('Loaded full successful hybrid: encoder, prompt encoder, mask decoder and trained CNN refiner', flush=True)
 
 
-def verify_reproduction(threshold, training, validation, foundation):
+def verify_reproduction(threshold, training, validation, foundation, excluded=False):
+    if excluded:
+        source_threshold = foundation['source_threshold']
+        for clicks in (1, 5):
+            actual = validation['refined'][clicks][source_threshold]['metrics']['mean_bilateral_patient_dice']
+            wanted = foundation['expected_validation'][str(clicks)]['mean_bilateral_patient_dice']
+            if not math.isfinite(actual) or abs(actual - wanted) > 1e-4:
+                raise ValueError(f'Foundation validation@{clicks}Dice at source threshold does not reproduce; no training started')
+        fixed = validation['refined'][5][.5]['metrics']['mean_bilateral_patient_dice']
+        wanted = foundation['expected_validation_fixed_0_5']['mean_bilateral_patient_dice']
+        if not math.isfinite(fixed) or abs(fixed - wanted) > 1e-4:
+            raise ValueError('Foundation fixed-threshold validation does not reproduce')
+        print('Foundation validation reproduced before optimizer updates; threshold will be recalibrated on retained cases.', flush=True)
+        return
     if threshold != foundation['source_threshold']:
         raise ValueError('Foundation train-calibrated threshold does not reproduce; no training started')
     for bundle, expected, split in ((training, foundation['expected_train'], 'train'),
@@ -195,6 +227,8 @@ def main():
     parser.add_argument('--check-only', action='store_true')
     parser.add_argument('--resolution-variant', choices=('baseline', 'detail', 'tokens', 'combined'))
     parser.add_argument('--audit-only', action='store_true')
+    parser.add_argument('--exclude-train-alias', action='append', default=[],
+                        help='Explicitly omit a diagnosed training alias; cache and manifest remain unchanged')
     args = parser.parse_args()
     args.foundation_run_dir = args.foundation_run_dir.expanduser().resolve()
     if args.source_root:

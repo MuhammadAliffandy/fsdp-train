@@ -136,13 +136,18 @@ def metrics(bundle):
             'mean_recall': float(np.mean([r['recall_full_target'] for r in rows]))}
 
 
+def active_train_aliases(prepared):
+    return set(prepared['patients']['train']) - set(prepared.get('excluded_train_aliases', ()))
+
+
 @torch.inference_mode()
 def evaluate(model, prepared, split, device, thresholds, seed, controls=False, export=None):
     model.eval()
     samples, patients = prepared['samples'][split], prepared['patients'][split]
+    aliases = sorted(active_train_aliases(prepared)) if split == 'train' else sorted(patients)
     components = ('refined', 'coarse_on_detail') if controls else ('refined',)
     results = {component: {click: {float(t): {'sides': [], 'patients': []} for t in thresholds} for click in (1, 5)} for component in components}
-    for alias in sorted(patients):
+    for alias in aliases:
         collection = [s for s in samples if s['case'] == alias]
         if sorted(s['side'] for s in collection) != ['LFSDP', 'RFSDP']:
             raise ValueError('Expected two side ROIs per patient')
@@ -225,10 +230,10 @@ def plot_results(history, training, validation, threshold, output):
     plt.close(fig)
 
 
-def calibrate_validate(model, prepared, device, seed):
+def calibrate_validate(model, prepared, device, seed, extra_validation_thresholds=()):
     training = evaluate(model, prepared, 'train', device, data.THRESHOLDS, seed)
     threshold = data.choose_threshold(training['refined'][5])
-    validation = evaluate(model, prepared, 'val', device, sorted(set((threshold, .5))), seed, controls=True)
+    validation = evaluate(model, prepared, 'val', device, sorted(set((threshold, .5, *extra_validation_thresholds))), seed, controls=True)
     return threshold, training, validation
 
 
@@ -258,7 +263,10 @@ def set_stage(model, epoch, warmup):
 
 def train_epoch(model, prepared, optimizer, scaler, criterion, device, epoch, args):
     stage = set_stage(model, epoch, args.head_warmup_epochs)
-    samples = prepared['samples']['train']
+    active = active_train_aliases(prepared)
+    samples = [sample for sample in prepared['samples']['train'] if sample['case'] in active]
+    if not samples:
+        raise ValueError('No training ROIs remain after explicit exclusions')
     order = torch.randperm(len(samples), generator=torch.Generator().manual_seed(args.seed + epoch)).tolist()
     optimizer.zero_grad(set_to_none=True)
     total, updates, skipped, probes = [], 0, 0, []
@@ -355,13 +363,14 @@ def execute(args):
                 'numpy_rng_state': np.random.get_state(), 'python_rng_state': random.getstate(),
                 'cuda_rng_state': torch.cuda.get_rng_state_all() if device.type == 'cuda' else []}
     if not args.resume:
-        threshold, training, validation = calibrate_validate(model, prepared, device, args.seed)
+        source_thresholds = (foundation['source_threshold'],) if foundation and prepared.get('excluded_train_aliases') else ()
+        threshold, training, validation = calibrate_validate(model, prepared, device, args.seed, source_thresholds)
         probe = None
         if resolution:
             from fsdp_resolution import gradient_probe, finish_audit
             if resolution['variant'] == 'baseline':
                 from train_fsdp_foundation import verify_reproduction
-                verify_reproduction(threshold, training, validation, foundation)
+                verify_reproduction(threshold, training, validation, foundation, excluded=bool(prepared.get('excluded_train_aliases')))
             probe = gradient_probe(model, prepared, args, config, criterion)
             if getattr(args, 'audit_only', False):
                 summary = finish_audit(model, prepared, args, config, threshold, training, validation, probe)
@@ -369,7 +378,7 @@ def execute(args):
                 return
         elif foundation:
             from train_fsdp_foundation import verify_reproduction
-            verify_reproduction(threshold, training, validation, foundation)
+            verify_reproduction(threshold, training, validation, foundation, excluded=bool(prepared.get('excluded_train_aliases')))
         else:
             # Zero-initialized residual head must reproduce mapped original SAM logits initially.
             for clicks in (1, 5):
@@ -407,7 +416,8 @@ def execute(args):
             row['source_plus_additional_epoch'] = sample_epoch + 1
         improved = False
         if epoch == 0 or (epoch + 1) % args.val_every == 0 or epoch + 1 == args.epochs:
-            threshold, training, validation = calibrate_validate(model, prepared, device, args.seed)
+            threshold, training, validation = calibrate_validate(model, prepared, device, args.seed,
+                (foundation['source_threshold'],) if foundation and prepared.get('excluded_train_aliases') else ())
             score = validation['refined'][5][threshold]['metrics']['mean_bilateral_patient_dice']
             row.update(train_threshold=threshold, train_dice_5=training['refined'][5][threshold]['metrics']['mean_bilateral_patient_dice'],
                 val_dice_1=validation['refined'][1][threshold]['metrics']['mean_bilateral_patient_dice'], val_dice_5=score,
@@ -434,7 +444,8 @@ def execute(args):
         raise ValueError('Selected hybrid checkpoint metadata differs')
     model.load_state_dict(saved['model_state_dict'], strict=True)
     del saved
-    threshold, training, validation = calibrate_validate(model, prepared, device, args.seed)
+    threshold, training, validation = calibrate_validate(model, prepared, device, args.seed,
+        (foundation['source_threshold'],) if foundation and prepared.get('excluded_train_aliases') else ())
     if threshold != best_threshold or abs(validation['refined'][5][threshold]['metrics']['mean_bilateral_patient_dice'] - best) > 1e-4:
         raise ValueError('Selected hybrid checkpoint/threshold does not reproduce')
     output, number = run / 'best_exports', 0
@@ -455,7 +466,10 @@ def execute(args):
         raise ValueError('Exported predictions do not reproduce selected patient scores')
     summary = {'complete': True, 'experiment': config['experiment'], 'completed_epochs': history[-1]['epoch'] if history else start,
         'planned_epochs': args.epochs, 'stopped_early': stopped, 'best_epoch': best_epoch, 'threshold': threshold,
-        'train_patients': 54, 'validation_patients': 10, 'reserved_test_patients': 20,
+        'train_patients': len(active_train_aliases(prepared)), 'original_train_patients': len(prepared['patients']['train']),
+        'excluded_train_aliases': sorted(prepared.get('excluded_train_aliases', ())),
+        'training_inclusion': config.get('training_inclusion'),
+        'validation_patients': 10, 'reserved_test_patients': 20,
         'best_validation_metrics': {str(k): validation['refined'][k][threshold]['metrics'] for k in (1, 5)},
         'best_frozen_training_metrics': {str(k): training['refined'][k][threshold]['metrics'] for k in (1, 5)},
         'sam_component_same_refined_click_trace': {str(k): validation['coarse_on_detail'][k][threshold]['metrics'] for k in (1, 5)},

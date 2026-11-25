@@ -14,6 +14,13 @@ done
 COMMAND=(python -u "$PROJECT_DIR/scripts/train_fsdp_foundation.py"
   --foundation-run-dir "$BASE" --run-dir "$RUN" --epochs "${ADDITIONAL_EPOCHS:-100}"
   --lr-multiplier "${LR_MULTIPLIER:-0.2}" --patience-epochs "${PATIENCE_EPOCHS:-50}" --device cuda:0)
+if [[ -n "${FSDP_EXCLUDE_TRAIN_ALIASES:-}" ]]; then
+  IFS=',' read -r -a EXCLUDED_ALIASES <<< "$FSDP_EXCLUDE_TRAIN_ALIASES"
+  for ALIAS in "${EXCLUDED_ALIASES[@]}"; do
+    if [[ ! "$ALIAS" =~ ^train_[0-9]{2}$ ]]; then echo "Invalid training alias exclusion: $ALIAS" >&2; exit 2; fi
+    COMMAND+=(--exclude-train-alias "$ALIAS")
+  done
+fi
 if [[ -n "${FSDP_SOURCE_ROOT:-}" ]]; then COMMAND+=(--source-root "$FSDP_SOURCE_ROOT"); fi
 case "${FSDP_VERIFIED_CACHE:-0}" in
   0) ;;
@@ -51,7 +58,7 @@ if ! kill -0 "$PID" 2>/dev/null; then
 else
   echo "FSDP foundation continuation launched: PID$PID; GPU$CUDA_VISIBLE_DEVICES"
 fi
-echo "First: reproduce45.63% before optimizer updates. Same cached ROI, CNN32, Turbo8,5clicks/side."
+echo "First: reproduce foundation validation before updates. Excluded aliases are omitted only from continuation training; cache/manifest remain unchanged."
 echo "Log: $LOG/latest.log"
 echo "Progress: $REPORT/latest/progress.json"
 echo "Final archive: $REPORT/latest/results.tar.gz"
