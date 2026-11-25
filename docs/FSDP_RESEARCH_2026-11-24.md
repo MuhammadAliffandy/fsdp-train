@@ -175,4 +175,58 @@ labelsTr/ColorTable asli saat ini kosong, tetapi cache1/9train/val telah lolos c
 
 Saran landmark dari client tetap masuk agenda lanjutan: posisi landmark dan hubungan ke struktur sekitar memerlukan definisi serta referensi pakar. Landmark harus dinilai dengan error posisi dalam mm; hasil tersebut tidak boleh disebut Dice FSDP. Full17class anatomical auxiliary training memerlukan pemulihan anotasi yang saat ini tidak ada. Tahap cepat berikutnya masih dapat memakai target binary cache yang sudah terverifikasi.
 
-Keputusan berikutnya adalah tiga pengujian kecil dan terukur: informasi klik, loss batas, lalu residual refiner3D. Memperbesar token tetap diuji melalui matriks aktif. Tidak ada sumber yang ditinjau di sini yang membuktikan80%Dice dapat dicapai pada definisi FSDP dan split privat ini. Ukuran model adalah salah satu variabel; target, supervision, interaksi, recipe dan evaluasi menentukan apakah kenaikan itu nyata.
+Keputusan saat24November adalah pengujian informasi klik, loss batas, lalu residual refiner3D. Pembaruan berikut menjabarkan hasil dan diagnosis setelah semua eksperimen tambahan. Tidak ada sumber yang ditinjau di sini yang membuktikan80%Dice dapat dicapai pada definisi FSDP dan split privat ini.
+
+## Diagnosis menyeluruh sebelum membentuk set baru — 25 November
+
+Ini diagnosis engineering dari kode dan hasil yang dikirim pengguna. Temuan yang perlu citra, bobot atau metadata DGX belum diklaim sudah diverifikasi lokal. Jangan mengubah target atau membuang pasien berdasarkan skor model.
+
+### Bukti eksperimen yang sudah ada
+
+Native side SAM v3val19,25%dan zoom v4val22,45%memakai crop/normalisasi berbeda dari hybrid fisik selanjutnya. Decoder-only19,09%dan partial encoder sekitar21,86%belum menyelesaikan fit. Tiny2pasien lama79%juga bukan validasi cohort.
+
+Hybrid fisik Turbo8³+CNN32³mencapai45,63%. Screening terkontrol20epoch: control47,75%, history49,18%, boundary47,51%, refiner47,20%. History memberi tambahan informasi sparse prompt, bukan hanya kapasitas model. Kelanjutan history tidak mengalahkan sumber; jitter kemudian49,38%. Full-cohort loss study memilih control49,47%, balanced mempertahankan sumber49,38%. Terakhir diukur30epoch: train/val59,00/42,74%dan59,11/45,19%. Pembelajaran train berjalan tetapi tidak memperbaiki pasien baru.
+
+Tiny-fit resep baru mencapai kontrol87,41%di35epoch, balanced86,72%di25, auxiliary86,69%di35. Ketiganya melewati minimum side/patient85%. Ini membantah klaim bahwa loss lama sama sekali tidak bisa belajar; belum membuktikan kemampuan fit54pasien. Tiny memakai2pasien, tanpa augmentasi, update setiap ROI dan LR lebih tinggi. Sampel, update budget dan regularisasi berbeda dari cohort.
+
+Physical ResUNet selesai180/300, early stop, best120: train65,51%, val33,27%, threshold train0,95; fixed0,5val31,43%. Gap32,24poin. Minimum training patient Dice0%. Ini baseline0klik dengan bobot acak dan resep baru; SAM memakai pretrained+5klik/sisi. Selisih−16,20poin tidak mengisolasi efek arsitektur. ResUNet tidak dipromosikan menggantikan SAM49,47%.
+
+Kasus ResUNet terpilih: train_28GT601/pred0; train_53GT564/pred3618/Dice0,2535; train_27GT294/pred815; train_15GT766/pred1777; train_26GT3254/pred7708; train_47GT719/pred1487. Pola campuran: prediksi kosong pada threshold0,95dan volume berlebih2–6,4kaliGT. train_53konsisten memiliki banyak FP; berdasarkan angka yang dibulatkan, recall kira-kira94%dan precision15%. Belum ada bukti bahwa targetnya salah. train_28harus diperiksa pada probabilitas asli dan threshold0,5sebelum disimpulkan tidak dikenali sama sekali.
+
+### Aliran dataset dan preprocessing
+
+1. Manifest pasien beku:54train,10val,20testbelum dibaca. Kedua sisi dari pasien yang sama tetap dalam split sama;108/20ROI bukan108/20pasien independen. Augmentasi tidak menambah pasien independen.
+2. Target otoritatif saat ini adalah binary native1/9di cache asli yang diverifikasi checksum. labelsTr/ColorTable asli kosong; anotasi17kelas belum tersedia. Mapping labels_exp1/2/3tidak cukup untuk mengklaim consensus FSDP. Cache yang utuh menjaga target lama, tidak membuktikan konsistensi anatomi.
+3. CTdibaca bersama size/spacing/origin/direction; array SimpleITK ZYXdiubah keXYZsecara eksplisit. Koordinat voxel dibawa ke world/LPS sebelum cropping. Source CT header, orientation, scaling metadata dan cache-native origin harus cocok. Arah tidak lazim bukan otomatis error dan tidak boleh diperbaiki dengan flip manual tanpa world-coordinate verification.
+4. Crop dibentuk dari pusat GTsisi, dengan field fisik turunan training saja. Ini bantuan GTsaat validasi, bukan whole-scan localization. Field detail saat ini96×160×208pada0,25mm:24×40×52mm. Context SAM52mm³di128³. Retention1,0menjawab apakah target masuk crop; bukan apakah seluruh CT/label alignment atau target semantik benar.
+5. Label memakai nearest resampling; CTlinear; logits direstorasi secara fisik ke native sebelum threshold. Roundtrip labelminimum0,95adalah gerbang representasi/scoring, bukan anatomical accuracy. Kasus26pernah sensitif pada fase grid; perbaikan fase tidak boleh ditafsirkan sebagai peningkatan model. Isotropic0,25mmhasil resampling tidak menciptakan informasi akuisisi yang hilang pada CTslice lebih tebal.
+6. **Normalisasi saat ini**: nilai CTpada voxel FSDPtrain digabung untuk percentile0,5/99,5clipping serta mean/std. Normalisasi berbasis foreground tidak otomatis keliru, tetapi untuk target kecil perlu diukur seberapa banyak konteks/bone/air menjadi jenuh dan apakah skalanya cocok dengan pretrained. Jangan menganggap semua model baru menerima preprocessing pretrained yang sama. Statistik source, detail, context dan target perlu dibandingkan per pasien.
+7. Support invalid/padding harus nol pada CTnormalized, diabaikan oleh loss dan menjadi background saat restorasi logits. Trainingpatch boleh mengandung bagian target; skor validasi selalu full target native. Loss patch, soft Dice, Dice native, surface Dice dan moving augmented training bukan metrik yang dapat dipertukarkan.
+
+### Jalur layer dan bagian yang belum terbukti
+
+SAM-Med3D Turbo: CTcontext128³ → patch stride16 → embedding8³(512token;6,5mm/cell) → sparse/dense prompt encoder → mask decoder32³. Titik fisik detail dipetakan ke context; history mengirim semua titik keSAM. Positional-feature audit lama menemukan convention mismatch, tetapi swap_xy justru menurunkan skor checkpoint. Itu bukan izin menukar koordinat checkpoint terlatih secara otomatis.
+
+Jalur detail: CT96×160×208 → fitur full8channel → half16channel48×80×104 → interpolasi dan conv32channel32³. Semantic embedding diproyeksikan32channel; fusion mencampur local32+semantic32+mask1+prompt2 →64channel. Decoder menggabungkan half/full skips → residual16→1ditambah mask SAM. Sel fusion fisiknya0,75×1,25×1,625mm, tetapi output/skip full-resolution tetap ada;32³bukan hard ceiling Dice. Pada source partial adaptation, SAMblocks10/11danmaskdecoder+seluruhCNNtrainable; encoder lain/prompt frozen. Jumlah total parameter bukan jumlah bobot yang benar-benar diadaptasi.
+
+Objective SAM: FP32valid-voxel squared Dice+BCE pada detail, plus0,25context objective, rata-rata5interaksi. Feedback coarse antar interaksi detached; ini pilihan pembelajaran yang disengaja, bukan semua jalur gradien terputus. Preflight hanya membuktikan shape/grad finite/nonzero; belum efektivitas gradien. Laporan audit yang sudah ada memuat norma komponen, cosine detail–auxiliary, FG/BGgradient serta estimasi AdamW. Ukuran gradien dan clipping sendiri bukan bukti sebab. Estimasi satuROI bukan update batch akumulasi aktual.
+
+Physical ResUNet: full16 → half32 → quarter64 → eighth128 → sixteenth192, decoder residual+skip, tiga head. Pada input96×160×208, bottleneck6×10×13; output utama tetap grid detail penuh. Semua4.761.267parameter random-initialized trainable. Auxiliary logits di-upsample sebelum loss; target tidak diperkecil. Soft Dice +0,5BCEdengan rata-rata foreground/background per kelas dapat menggeser kalibrasi/FP; threshold0,95adalah sinyal yang perlu diperiksa, bukan akurasi95%. Samplingpatch, normalisasi, loss, random initialization dan0klik berubah bersama; kegagalan ini tidak mengisolasi satu layer.
+
+Study tokens16/native-half belum memberi bukti performa lengkap karena SIGTERM. Tokens16pada kode resolusi memakai context256³dengan patch stride16; interpolasi context bukan informasi CTbaru. Menambah token bisa mengubah biaya, distribusi fitur dan inisialisasi posisi. Kegagalan proses bukan kegagalan arsitektur, dan belum ada dasar mengklaim grid lebih besar pasti memperbaiki Dice.
+
+### Diagnosis yang boleh dan tidak boleh disimpulkan
+
+Terbukti: ada pembelajaran pada tiny/train; ada gap generalisasi cohort; loss balanced tidak mengungguli kontrol; ResUNet0klik lebih rendah pada benchmark ini; sejumlah pasien mengalami FPbesar atau prediksi kosong. Belum terbukti: anotasi salah, CTsalah orientasi, foreground clipping penyebab utama, auxiliary saling melawan, encoder8³menjadi bottleneck tunggal, model lebih besar/MedSAM2akan mencapai80%.
+
+Prioritas pengukuran: audit source CT+clipping seluruh54/10ROI; recompute roundtrip; overlay/probabilitas train_28/53dengan train_01sebagai referensi; per-layer shape/activation spatial variation; baca laporan gradien yang sudah dibuat. Layer activations dan statistik bobot saja tidak membuktikan fitur berguna. Pemeriksaan batas FSDPdan kesepakatan anatomi tetap memerlukan ahli; jangan mengedit label berdasarkan kesalahan validasi.
+
+### Pembentukan set baru yang dapat diaudit
+
+`diagnose_fsdp_system.py` menghimpun summary/config/history/CSVseluruh run yang tersedia, audit lama, status run yang belum selesai, statistik128ROI, header CT64pasien dan laporan gradien yang sudah ada. Tidak membaca test CT/header atau melakukan optimizer update. Dengan probe, ia menjalankan CPU FP32ResUNet terpilih pada kedua sisi train_01/28/53, menyimpan statistik setiap encoder/decoder/head, probabilitas native dan overlay0,5/thresholdterpilih. Perbedaan kecil FP32versusBF16source dilaporkan, bukan diklaim perubahan model.
+
+Kandidat N1ditulis sebagai `candidate_context_norm.pt` terpisah: semua target native, model/context masks, support, geometri, case/split dan metadatanya tetap; hanya CTnormalization berubah. CTasli diverifikasi checksum/geometri, di-resample kegrid lama, lalu memakai fixedwindow−1000…2000danmean/stdsampel konteks **54training saja**. Asumsi HUharus ditinjau dari metadata/intensitas. Data validasi hanya ditransformasi memakai statistik training; tidak ikut menentukan window atau mean/std. Ini hipotesis N1untuk review, bukan perbaikan yang telah terbukti atau otomatis dipromosikan ke trainer lama. Sourcecache/checkpoint tidak ditimpa.
+
+Urutan set eksperimen berikut harus satu perubahan terhadap kontrol baru yang sebanding: N0reproduce source+currentinput; N1normalisasi saja; L1perubahan loss jika audit mendukung; A1adaptasi blocks8–11jika input/target sehat; A2grid16jika runtime siap; E1pretrained murni/MedSAM2dengan protokol prompt eksplisit. Jangan menjalankan seluruh kombinasi atau memilih berdasarkan tiny Dice. Konfirmasi kandidat menjanjikan dengan seed kedua dan/atau patient folds; fold tidak boleh memakai checkpoint yang sudah dilatih pada seluruh54pasien dan statistik preprocessing fold harus dibangun dari inner-train.
+
+Gerbang rilis set baru: integritas target lolos, unitCTdan alignment kasus sulit ditinjau, perubahan normalisasi terukur, source/current versus candidate jelas terversi, dan tujuan0klik atau interaktif ditetapkan. Thresholdoperasional tetap train-only;80%adalah sasaran validasi, bukan angka yang dipaksakan lewat pemilihan threshold/pasien. Testakhir menunggu protokol dibekukan dan pemulihan anotasi test yang sah.
