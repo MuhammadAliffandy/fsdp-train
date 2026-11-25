@@ -1283,3 +1283,15 @@ tail -n 80 -f logs/fsdp_resolution_remaining/latest.log
 ```
 
 The original per-variant files remain under `outputs/private/fsdp_resolution/latest/train/`; aggregate continuation results appear under `outputs/private/fsdp_resolution_remaining/latest/summary.json`. The old root's interrupted parent progress is not rewritten. The new archive references the completed child exports without including model weights/cache. To resume an interrupted new parent, retain its `FSDP_RESOLUTION_REMAINING_NAME` and set `RESUME=1`; completed children are verified and skipped again. Actual DGX parallel execution and GPU0capacity have not been verified from the local workspace.
+
+### Resolution SIGTERM sender diagnostics
+
+The GPU3attempt skipped baseline and began tokens, then the child exited with-15during foundation verification. That identifies SIGTERM, not its sender or reason. The new child wrapper can log the immediate sender PID/UID/signal code and readable executable/comm metadata without sudo. It uses Linux [sigwaitinfo](https://man7.org/linux/man-pages/man2/sigwaitinfo.2.html), installed before Torch/CUDA/native threads, when the inherited SIGTERM disposition is default. After recording the received SIGTERM, it terminates itself with that signal; there is no automatic retry or continuation after termination. It does not replace an existing custom/ignored disposition or an inherited blocked mask. If observer initialization fails, the diagnostic worker exits rather than continuing with broken signal handling.
+
+Logs are under the separate report directory: `tokens_signal_setup.json` records whether setup was enabled, and `tokens_signal.json` appears if a SIGTERM is captured. They are not written inside the legacy trainer's child run directory, so a new child is not accidentally made to look like an existing run. The sender may be a forwarding parent/supervisor rather than the original initiator; a missing record cannot prove no signal was sent (for example, termination before setup or an uncatchable signal). Readable metadata excludes full sender arguments/environment. Original trainer/config/checkpoint semantics and active history source files stay unchanged.
+
+After pulling this diagnostic revision, use a fresh continuation report name/`RESUME=0` because its own source signature changed. The original resolution child checkpoints still use unchanged legacy code and remain eligible for strict per-variant resume. A manual diagnostic attempt may identify a supervisor; it does not establish permission to bypass that supervisor. If it stops again, inspect:
+
+```bash
+python -m json.tool outputs/private/fsdp_resolution_remaining/latest/tokens_signal.json
+```

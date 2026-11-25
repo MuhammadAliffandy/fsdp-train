@@ -164,11 +164,13 @@ def action(folder, variant, original_config):
     return 'resume', {'saved_epoch': saved['epoch'], 'checkpoint_sha256': digest(folder / 'hybrid_latest.pth')}
 
 
-def child_command(project, folder, variant, config, mode):
-    command = [sys.executable, '-u', str(Path(__file__).resolve()), '--child',
-        str(project / 'scripts/train_fsdp_foundation.py'), '--foundation-run-dir', config['foundation_run_dir'],
+def child_command(project, folder, variant, config, mode, signal_report=None):
+    command = [sys.executable, '-u', str(Path(__file__).resolve()), '--child']
+    if signal_report is not None:
+        command.extend(['--signal-report', str(signal_report)])
+    command.extend([str(project / 'scripts/train_fsdp_foundation.py'), '--foundation-run-dir', config['foundation_run_dir'],
         '--run-dir', str(folder), '--resolution-variant', variant, '--epochs', str(config['epochs']),
-        '--lr-multiplier', str(config['lr_multiplier']), '--patience-epochs', str(config['patience_epochs']), '--device', config['device']]
+        '--lr-multiplier', str(config['lr_multiplier']), '--patience-epochs', str(config['patience_epochs']), '--device', config['device']])
     if config.get('source_root'):
         command.extend(['--source-root', config['source_root']])
     if config.get('verified_cache'):
@@ -179,9 +181,16 @@ def child_command(project, folder, variant, config, mode):
 
 
 def child_main(arguments):
+    signal_report = None
+    if arguments[:1] == ['--signal-report']:
+        signal_report = Path(arguments[1]).resolve()
+        arguments = arguments[2:]
     expected = Path(__file__).with_name('train_fsdp_foundation.py').resolve()
     if not arguments or Path(arguments[0]).resolve() != expected:
         raise ValueError('Only the unchanged project foundation trainer can be delegated')
+    if signal_report is not None:
+        from fsdp_signal_provenance import install
+        install(signal_report)
     import torch
     budget = float(os.environ.get('FSDP_RESOLUTION_GPU_MEMORY_GIB', '40'))
     total = torch.cuda.get_device_properties(0).total_memory
@@ -204,6 +213,7 @@ def execute(args):
                        original.get('verified_cache', False))
     frozen = {'original_workflow': original, 'original_code_sha256': read(args.original_run_dir / 'workflow_code_sha256.json'),
               'continuation_code_sha256': digest(Path(__file__)), 'variants': list(VARIANTS),
+              'signal_observer_sha256': digest(Path(__file__).with_name('fsdp_signal_provenance.py')),
               'original_run_dir': str(args.original_run_dir), 'test_images_read': False}
     if args.resume:
         if read(args.run_dir / 'workflow_config.json') != frozen:
@@ -213,7 +223,8 @@ def execute(args):
     entries = []
     for variant in VARIANTS:
         verify_source(args.project_dir, args.original_run_dir)
-        if digest(Path(__file__)) != frozen['continuation_code_sha256']:
+        if (digest(Path(__file__)) != frozen['continuation_code_sha256']
+                or digest(Path(__file__).with_name('fsdp_signal_provenance.py')) != frozen['signal_observer_sha256']):
             raise ValueError('Continuation source changed between variants')
         if active_writers(args.project_dir, args.original_run_dir):
             raise ValueError('Another resolution writer is active; no child launched')
@@ -222,10 +233,14 @@ def execute(args):
         print(f'Resolution {variant}: {mode}' + (f' from saved additional epoch {previous["saved_epoch"]}' if mode == 'resume' else ''), flush=True)
         save(args.run_dir / 'progress.json', {'complete': False, 'active_variant': variant, 'action': mode, 'entries': entries})
         if mode != 'skip':
-            status = run_child(child_command(args.project_dir, folder, variant, original, mode), args.run_dir / 'active_child.json')
+            signal_report = args.run_dir / f'{variant}_signal.json'
+            status = run_child(child_command(args.project_dir, folder, variant, original, mode, signal_report), args.run_dir / 'active_child.json')
             save(args.run_dir / f'{variant}_process_exit.json', {'returncode': status, 'variant': variant, 'mode': mode})
             if status != 0:
-                raise ValueError(f'{variant} exited with returncode {status}; later variants were not launched')
+                sender = read(signal_report) if signal_report.exists() else None
+                detail = f'; signal sender PID={sender["sender_pid"]}, UID={sender["sender_uid"]}' if sender and 'sender_pid' in sender else ''
+                raise ValueError(f'{variant} exited with returncode {status}{detail}; later variants were not launched. '
+                                 f'Signal report, when available: {signal_report}')
         summary = completed(folder, variant, original)
         entries.append({'variant': variant, 'mode': mode, 'directory': str(folder), 'completed_epochs': summary['completed_epochs'],
                         'best_epoch': summary['best_epoch'], 'best_validation_metrics': summary['best_validation_metrics'],
@@ -241,6 +256,8 @@ def execute(args):
         archive.add(args.run_dir / 'report.json', arcname='results/summary.json')
         for entry in entries:
             archive.add(Path(entry['directory']) / 'results.tar.gz', arcname=f'results/{entry["variant"]}/results.tar.gz')
+        for path in args.run_dir.glob('*_signal*.json'):
+            archive.add(path, arcname='results/' + path.name)
     save(args.run_dir / 'summary.json', report); save(args.run_dir / 'progress.json', report)
     print(json.dumps(report, indent=2), flush=True)
 

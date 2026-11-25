@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 import resume_fsdp_resolution as remaining
 import run_fsdp_research as research_parent
 import train_fsdp_foundation as foundation
+import fsdp_signal_provenance as provenance
 
 
 def fixture(root):
@@ -83,6 +84,7 @@ class RemainingResolutionTests(unittest.TestCase):
             commands = []
             def child(command, record):
                 commands.append(command)
+                self.assertIn('--signal-report', command)
                 variant = command[command.index('--resolution-variant') + 1]
                 self.assertEqual(command[command.index('--epochs') + 1], '100')
                 self.assertEqual(command[command.index('--lr-multiplier') + 1], '0.2')
@@ -139,6 +141,21 @@ class RemainingResolutionTests(unittest.TestCase):
             limit.assert_called_once_with(.5, 0)
             self.assertEqual(sys.argv, arguments)
             run.assert_called_once_with(str(original), run_name='__main__')
+
+    def test_signal_observer_is_started_before_cuda_and_is_not_passed_to_legacy_parser(self):
+        original = Path(remaining.__file__).with_name('train_fsdp_foundation.py').resolve()
+        arguments = [str(original), '--run-dir', '/original/train/tokens', '--epochs', '100']
+        calls = []
+        with tempfile.TemporaryDirectory() as folder:
+            output = (Path(folder) / 'tokens_signal.json').resolve()
+            with patch.object(provenance, 'install', side_effect=lambda path: calls.append(('observer', path))), \
+                 patch.object(torch.cuda, 'get_device_properties', side_effect=lambda index:
+                     (calls.append(('cuda', index)) or argparse.Namespace(total_memory=80 * 2**30))), \
+                 patch.object(torch.cuda, 'set_per_process_memory_fraction'), patch.object(sys, 'argv', ['wrapper']), \
+                 patch.object(remaining.runpy, 'run_path'), contextlib.redirect_stdout(io.StringIO()):
+                remaining.child_main(['--signal-report', str(output), *arguments])
+                self.assertEqual(calls[:2], [('observer', output), ('cuda', 0)])
+                self.assertEqual(sys.argv, arguments)
 
     def test_second_parent_cannot_acquire_original_workflow_lock(self):
         with tempfile.TemporaryDirectory() as folder:
