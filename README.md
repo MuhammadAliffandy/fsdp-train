@@ -1395,3 +1395,35 @@ bash scripts/launch_fsdp_loss_cohort_nohup.sh
 ```
 
 Source/diagnostic overrides are `FSDP_COHORT_SOURCE_DIR` and `FSDP_DIAGNOSTIC_DIR`; defaults point to the completed jitter/history source and diagnostic paths above. Budget overrides are `COHORT_EPOCHS`, `LR_MULTIPLIER`, `PATIENCE_EPOCHS`, and `ACCUMULATION_STEPS`. No test patients are evaluated, no automatic deployment occurs, and tiny training85%does not promise cohort train/validation85%. Best-of-two validation remains exploratory on the repeatedly inspected10patient split.
+
+### Native physical-ROI ResUNet3D baseline (zero clicks)
+
+The completed SAM cohort study selected control49.4739%validation at epoch5; balanced retained its49.3824%source. Last measured train/validation at epoch30were59.00/42.74%(control) and59.11/45.19%(balanced). This does not establish a loss defect. The user authorized a dedicated3Dsegmentation baseline on the same physical cache. Properly configured residual U-Net baselines are motivated by [nnU-Net Revisited](https://arxiv.org/abs/2404.09556); this implementation is a custom benchmark, not official nnU-Net and not a predicted80%result.
+
+`physical_resunet.py` is a fully trainable random-initialized residual encoder/decoder with channels16/32/64/128/192, GroupNorm8, four stride2stages, skip connections, and three decoder heads. CT stays on the existing selected physical grid (normally96×160×208at0.25mm), with full-resolution primary logits. Auxiliary logits are interpolated to the original target resolution; tiny labels are not downsampled for supervision. Loss is soft Dice +0.5class-balanced BCE, with deep-supervision weights1/0.3/0.15normalized by their sum. This is a different architecture/initialization/objective/recipe from SAM; it is not a one-variable ablation.
+
+Same54train/10validation patient split, same verified binary target authority, normalization and GT-derived ROI. No new annotations, no test reads, no SAM initialization and no oracle clicks. Consequently this is zero-click segmentation **inside a GT-assisted ROI**, not automatic whole-scan localization. SAM remains an unchanged5-click-per-side benchmark; reports label the protocol difference.
+
+Training mixes50%full ROI and50%patches up to64×112×144;67%of patches include a sampled training foreground point. Training patches may contain only part of a target. Evaluations always use the full fixed physical ROI and score the complete target on its original native grid, background elsewhere. Augmentation uses paired LR reflection, mild gain/shift and normalized Gaussian noise sigma0.01; no sharpening or aggressive deformation. Invalid support stays excluded from loss and zero in normalized CT. Cache tensors remain unmodified.
+
+Defaults: AdamW LR3e-4/weight decay1e-4, accumulation2(54attempted updates/epoch), gradient clip12,10epoch warmup/cosine,300epoch cap, train-threshold calibration/validation every5plus first/final, early-stop patience60/min_delta0.001. All model weights are optimized. The first full-cache-shape forward/backward must pass finite-gradient/state-immutability checks before optimizer updates. Dataset/cache/SAM benchmark checksums, physical policy and split integrity must match; insufficient8GiBoutput space or insufficient GPU capacity causes refusal.
+
+```bash
+conda activate fsdp-med3d
+cd ~/raid/Clara/fsdp-train && git pull --ff-only origin main && \
+GPU_ID=7 ALLOW_GPU_SHARING=1 EXCLUDE_GPU_IDS=0,3 RESUME=0 \
+FSDP_SOURCE_ROOT="$HOME/raid/normal case_86" \
+bash scripts/launch_physical_resunet_nohup.sh
+```
+
+The launcher checks48GiBfree for a40GiBallocator cap plus8headroom; no jobs stopped. It starts one full cohort run, not a new tiny gate. Logs/reports are separate:
+
+```bash
+tail -n 80 -f logs/physical_resunet/latest.log
+python -m json.tool outputs/private/physical_resunet/latest/progress.json
+python -m json.tool outputs/private/physical_resunet/latest/summary.json
+```
+
+Best/latest checkpoints are `resunet_best.pth`/`resunet_latest.pth`. Selected threshold uses only training Dice; validation patient-macro native Dice selects weights. Fixed0.5validation is reported separately. Final native prediction files are checked for exact masks, geometry, and score reproduction; private `best_exports` includes per-patient/side CSVs, target/prediction NIfTI, three-plane overlays and a loss/train/validation/patient figure. `results.tar.gz` includes reports/visuals but no model weights or cache. Comparison delta against SAM49.47%is a benchmark difference with distinct click protocols, not a controlled architecture effect or a test score.
+
+Strict unfinished resume verifies code/data/config/initialization, restores optimizer/scheduler/scaler/early-stop/history and CPU/CUDA/Python/NumPy RNG, and prevents concurrent writers. Set `RESUME=1 RESUNET_RUN_NAME=<original printed name>` and retain the same settings. Budget overrides: `RESUNET_EPOCHS`, `RESUNET_LR`, `PATIENCE_EPOCHS`, `ACCUMULATION_STEPS`; source overrides: `FSDP_FOUNDATION_DIR`, `SAM_COMPARISON_DIR`. Do not change code during a run intended for strict resume. Actual H100time/memory and new Dice require server execution; no80%claim is established locally.
