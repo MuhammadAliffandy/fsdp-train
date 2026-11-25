@@ -16,6 +16,10 @@ COMMAND=(python -u "$PROJECT_DIR/scripts/run_fsdp_research.py" --foundation-run-
   --patience-epochs "${PATIENCE_EPOCHS:-50}" --boundary-weight "${BOUNDARY_WEIGHT:-0.05}"
   --boundary-clip-mm "${BOUNDARY_CLIP_MM:-5}" --device cuda:0)
 if [[ -n "${FSDP_SOURCE_ROOT:-}" ]]; then COMMAND+=(--source-root "$FSDP_SOURCE_ROOT"); fi
+if [[ -n "${FSDP_RESEARCH_SOURCE_DIR:-}" ]]; then
+  SOURCE_ARM="$(python -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).expanduser().resolve(strict=True))' "$FSDP_RESEARCH_SOURCE_DIR")"
+  COMMAND+=(--research-source-dir "$SOURCE_ARM")
+fi
 case "${FSDP_VERIFIED_CACHE:-1}" in
   0) ;;
   1) COMMAND+=(--verified-cache) ;;
@@ -65,7 +69,11 @@ if ! kill -0 "$PID" 2>/dev/null; then
   if wait "$PID"; then echo "Research workflow finished during startup."; else tail -80 "$LOG_FILE" >&2; exit 1; fi
 fi
 echo "Research workflow PID$PID; GPU request=${GPU_ID:-1}; selected UUID=$SELECTED_UUID"
-echo "Sequential arms: control/history/boundary/refiner; ${ADDITIONAL_EPOCHS:-20}additional epochs each."
+if [[ -n "${FSDP_RESEARCH_SOURCE_DIR:-}" ]]; then
+  echo "History continuation only; source=$SOURCE_ARM; ${ADDITIONAL_EPOCHS:-20} additional epochs."
+else
+  echo "Sequential arms: control/history/boundary/refiner; ${ADDITIONAL_EPOCHS:-20}additional epochs each."
+fi
 echo "Log: $LOG/latest.log"
 echo "Progress: $REPORT/latest/progress.json"
 echo "Archive: $REPORT/latest/results.tar.gz"

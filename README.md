@@ -1236,3 +1236,24 @@ bash scripts/switch_fsdp_resolution_to_research.sh
 ```
 
 The switch creates a fresh research workflow on the released GPU, using the same45.63%foundation and default20additional epochs per arm. It explicitly clears `EXCLUDE_GPU_IDS` for this launch so the released GPU0can be reused; unset exclusions still default to0for ordinary research launches. Existing memory headroom and40GiBallocator safeguards remain, and shared-capacity mode defaults to enabled for this switch without stopping any co-resident jobs. It can be set to strict mode with `ALLOW_GPU_SHARING=0`. No successful launch is guaranteed if that GPU lacks the required free capacity. A timestamped stop record under `outputs/private/stops` includes the target, children, GPU and retained checkpoint file paths/sizes. If the tracked resolution workflow already exited, the helper sends no signal and stops; use the ordinary research launcher after inspecting GPU capacity.
+
+### Continue the selected trained history checkpoint
+
+The completed GPU7 research screen reported validation Dice47.75%control,49.18%history,47.51%boundary and47.20%refiner, each with20additional epochs. History's selected checkpoint is epoch5. These are the user's DGX results, rounded from its summary, under GT-assisted ROI and5oracle clicks per side. The source is `runs/fsdp_research_gpu7_20261124T132503Z_3250370/history/research_best.pth`.
+
+`launch_fsdp_history_nohup.sh` creates one history-only continuation from that completed best checkpoint. It inherits the full trained SAM/CNN state, fixed8³/32³architecture, original verified cache/ROI,54/10split, click budget, augmentation, seed and evaluation rules. It does not replay all four arms or resume the interrupted resolution workflow. Resolution checkpoints and the completed research artifacts remain intact.
+
+Default budget is100additional epochs, a fresh optimizer/scheduler/scaler, LR multiplier0.1relative to the original foundation (half the screening LR multiplier0.2), five-epoch warmup/cosine schedule, and early stopping after25epochs without gain beyond the configured patience threshold. This is a new fine-tuning run, not an exact continuation of the old optimizer. The epoch0candidate is the inherited history model, so the new best-selection pool includes the original49.18%result. The budget is a cap and does not promise improved Dice or100completed epochs.
+
+The source's completed status, variant, checkpoint/config/summary hashes, original foundation, cache/manifest/policy, model/data/metric implementation hashes, package versions and recipe must match. Before any new optimizer step, reproduce source train/val@1/@5, its train-calibrated threshold and fixed0.5validation control within1e-4absolute Dice; failure stops training. Model weights load strictly. A source reproduction proof, its provenance, cumulative source epoch and delta versus the source are exported. A single continued history arm has no matched control for its extended budget.
+
+On DGX:
+
+```bash
+cd ~/raid/Clara/fsdp-train && git pull --ff-only origin main && conda activate fsdp-med3d && \
+GPU_ID=7 ALLOW_GPU_SHARING=1 MIN_FREE_GPU_GIB=48 FSDP_RESEARCH_GPU_MEMORY_GIB=40 \
+FSDP_SOURCE_ROOT="$HOME/raid/normal case_86" FSDP_VERIFIED_CACHE=1 \
+bash scripts/launch_fsdp_history_nohup.sh
+```
+
+The wrapper's default source is the immutable run path above; override `FSDP_RESEARCH_SOURCE_DIR` for another compatible completed history arm. The source path is resolved before updating the research latest link. Log/report locations remain `logs/fsdp_research/latest.log` and `outputs/private/fsdp_research/latest`. The new log counter starts at1; cumulative epoch reporting begins at36for the original source30+history-best5. Look for `Loaded trained history best checkpoint` and `Trained history source reproduced before optimizer updates` before the new training loop. GPU capacity and unprivileged memory/exit diagnostics remain enabled. Strict resume applies to an unfinished new continuation only; retain its run name and all original arguments/source files.

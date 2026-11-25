@@ -68,16 +68,19 @@ def exit_details(status):
 
 def execute(args):
     inspect_foundation(args.foundation_run_dir, args.source_root, args.verified_cache)
+    source = getattr(args, 'research_source_dir', None)
+    variants = ('history',) if source else VARIANTS
     config = {'parameters': {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items() if k != 'resume'},
-              'code_sha256': code_signature(), 'variants': list(VARIANTS),
-              'scope': 'independent controlled arms on one GPU; runs alongside resolution workflow on another GPU'}
+              'code_sha256': code_signature(), 'variants': list(variants),
+              'scope': ('one history continuation from a completed source on the selected GPU' if source
+                        else 'independent controlled arms on one GPU; runs alongside resolution workflow on another GPU')}
     if args.resume:
         if data.read(args.run_dir / 'workflow_config.json') != config:
             raise ValueError('Research workflow resume settings/source changed')
     else:
         data.save(args.run_dir / 'workflow_config.json', config)
     entries = []
-    for variant in VARIANTS:
+    for variant in variants:
         if code_signature() != config['code_sha256']:
             raise ValueError('Research source changed between arms')
         child = args.run_dir / variant
@@ -92,6 +95,8 @@ def execute(args):
             command.extend(['--source-root', str(args.source_root)])
         if args.verified_cache:
             command.append('--verified-cache')
+        if source:
+            command.extend(['--research-source-dir', str(source)])
         if args.resume and (child / 'summary.json').exists():
             summary = data.read(child / 'summary.json')
             if (not summary['complete'] or summary['variant'] != variant or summary['test_images_read']
@@ -126,15 +131,21 @@ def execute(args):
             'native_boundary_metrics': summary.get('native_boundary_metrics'),
             'delta_vs_foundation': summary['validation_change_vs_foundation'],
             'delta_vs_candidate_initial': summary['validation_change_vs_candidate_initial']}
+        if source:
+            entry['research_source'] = summary['research_source']
+            entry['delta_vs_research_source'] = summary['validation_change_vs_research_source']
         entries.append(entry)
         data.save(args.run_dir / 'progress.json', {'complete': False, 'active_variant': None,
             'entries': entries, 'test_images_read': False})
-    control = entries[0]['best_validation_metrics']['5']['mean_bilateral_patient_dice']
+    control = next((entry['best_validation_metrics']['5']['mean_bilateral_patient_dice']
+                    for entry in entries if entry['variant'] == 'control'), None)
     for entry in entries:
-        entry['delta_vs_matched_control'] = entry['best_validation_metrics']['5']['mean_bilateral_patient_dice'] - control
+        entry['delta_vs_matched_control'] = (entry['best_validation_metrics']['5']['mean_bilateral_patient_dice'] - control
+                                            if control is not None else None)
     report = {'complete': True, 'entries': entries, 'gpu': data.read(args.gpu_record) if args.gpu_record else None,
         'test_images_read': False, 'validation_images_read': True, 'epochs_per_arm': args.epochs,
-        'interpretation': 'Research screen; one controlled change per arm. History changes prompt information; no automatic model promotion.',
+        'interpretation': ('History continuation from a completed best checkpoint; new optimizer/schedule; no matched control for the extended budget.'
+                           if source else 'Research screen; one controlled change per arm. History changes prompt information; no automatic model promotion.'),
         'archive': str(args.run_dir / 'results.tar.gz')}
     data.save(args.run_dir / 'report.json', report)
     with tarfile.open(args.run_dir / 'results.tar.gz', 'w:gz') as archive:
@@ -153,6 +164,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--foundation-run-dir', type=Path, required=True)
     parser.add_argument('--source-root', type=Path)
+    parser.add_argument('--research-source-dir', type=Path)
     parser.add_argument('--verified-cache', action='store_true')
     parser.add_argument('--run-dir', type=Path, required=True)
     parser.add_argument('--gpu-record', type=Path)
@@ -168,7 +180,7 @@ def main():
             or not 0 < args.lr_multiplier < 1 or not math.isfinite(args.boundary_weight) or args.boundary_weight <= 0
             or not math.isfinite(args.boundary_clip_mm) or args.boundary_clip_mm <= 0):
         parser.error('Invalid research budget/objective')
-    for key in ('foundation_run_dir', 'run_dir', 'source_root', 'gpu_record'):
+    for key in ('foundation_run_dir', 'run_dir', 'source_root', 'gpu_record', 'research_source_dir'):
         if getattr(args, key) is not None:
             setattr(args, key, getattr(args, key).expanduser().resolve())
     old, _ = inspect_foundation(args.foundation_run_dir, args.source_root, args.verified_cache)
@@ -177,6 +189,8 @@ def main():
                  Path(control['data_dir']).resolve(), Path(control['source_root']).resolve()]
     if args.source_root:
         protected.append(args.source_root)
+    if args.research_source_dir:
+        protected.append(args.research_source_dir)
     if any(args.run_dir.is_relative_to(p) for p in protected):
         parser.error('Research outputs must be outside original data/foundation')
     if args.resume:

@@ -226,6 +226,7 @@ class GPUIsolationTests(unittest.TestCase):
             python.write_text('''#!/bin/sh
 case "$*" in
   *fsdp_research_gpu.py*) exec "$TASK_REAL_PYTHON" "$@" ;;
+  -c*) exec "$TASK_REAL_PYTHON" "$@" ;;
   *) printf '%s\\n' "$CUDA_VISIBLE_DEVICES" "${FSDP_RESEARCH_GPU_MEMORY_GIB:-none}" "$@" > "$TASK_CAPTURE"; echo simulated-child-exit; exit 3 ;;
 esac
 ''')
@@ -259,11 +260,18 @@ esac
             self.assertEqual(lines[lines.index('--epochs') + 1], '20')
             self.assertEqual(old_log.read_text(), 'active GPU0 resolution log')
             capture.unlink()
-            env.update(TASK_GPU_BUSY='1', ALLOW_GPU_SHARING='1', FSDP_RESEARCH_GPU_MEMORY_GIB='40', MIN_FREE_GPU_GIB='32')
+            source = root / 'completed history'; source.mkdir()
+            source_link = root / 'history_latest'; source_link.symlink_to(source)
+            env.update(TASK_GPU_BUSY='1', ALLOW_GPU_SHARING='1', FSDP_RESEARCH_GPU_MEMORY_GIB='40', MIN_FREE_GPU_GIB='32',
+                       FSDP_RESEARCH_SOURCE_DIR=str(source_link), ADDITIONAL_EPOCHS='100', LR_MULTIPLIER='0.1', PATIENCE_EPOCHS='25')
             result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=15)
             self.assertNotEqual(result.returncode, 0)
             lines = capture.read_text().splitlines()
             self.assertEqual(lines[:2], ['GPU-research-test', '40'])
+            self.assertEqual(lines[lines.index('--research-source-dir') + 1], str(source.resolve()))
+            self.assertEqual(lines[lines.index('--epochs') + 1], '100')
+            self.assertEqual(lines[lines.index('--lr-multiplier') + 1], '0.1')
+            self.assertEqual(lines[lines.index('--patience-epochs') + 1], '25')
             record = json.loads((root / 'logs/fsdp_research/fsdp_research_unit.gpu.json').read_text())
             self.assertTrue(record['sharing_allowed'])
             self.assertEqual(record['minimum_free_gib'], 48.)

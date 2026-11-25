@@ -112,7 +112,7 @@ class ResearchTrainerTests(unittest.TestCase):
                 logits = logits + model.sam.mask_decoder.project(model.sam.image_encoder.project(value))
                 loss = physical.masked_loss(criterion, logits, sample['target'], sample['valid']) if criterion is not None else None
                 return loss, {k: {'refined': logits, 'coarse_on_detail': logits} for k in (1, 5)}
-            args = argparse.Namespace(run_dir=root / 'interrupted', variant='control', device='cpu', resume=False,
+            args = argparse.Namespace(run_dir=root / 'interrupted', variant='history', device='cpu', resume=False,
                                       epochs=2, patience_epochs=50, boundary_weight=.05)
             args.run_dir.mkdir()
             with patch.object(research, 'prepare', prepare), patch.object(base, 'build', build), \
@@ -135,6 +135,41 @@ class ResearchTrainerTests(unittest.TestCase):
                 reference_args.run_dir.mkdir()
                 research.execute(reference_args)
                 reference = torch.load(reference_args.run_dir / 'research_latest.pth', weights_only=False)
+                source_summary = physical.read(reference_args.run_dir / 'summary.json')
+                source_path = reference_args.run_dir / 'research_best.pth'
+                source_hash = file_hash(source_path)
+                metadata = {'directory': str(reference_args.run_dir), 'checkpoint_sha256': source_hash,
+                    'config_sha256': file_hash(reference_args.run_dir / 'config.json'),
+                    'summary_sha256': file_hash(reference_args.run_dir / 'summary.json'),
+                    'best_epoch': source_summary['best_epoch'], 'source_plus_additional_epoch': 30 + source_summary['best_epoch'],
+                    'threshold': source_summary['threshold'], 'expected_train': source_summary['best_frozen_training_metrics'],
+                    'expected_validation': source_summary['best_validation_metrics'],
+                    'expected_validation_fixed_0_5': source_summary['validation_control_fixed_0_5']}
+                config = {**config, 'research_source': metadata}
+                continuation = copy.copy(reference_args); continuation.run_dir = root / 'continuation'; continuation.epochs = 2
+                continuation.run_dir.mkdir()
+                with patch.object(research, 'train_epoch', interrupted), self.assertRaisesRegex(RuntimeError, 'simulated interruption'):
+                    research.execute(continuation)
+                continuation.resume = True
+                research.execute(continuation)
+                continued = torch.load(continuation.run_dir / 'research_latest.pth', weights_only=False)
+                continuation_reference = copy.copy(continuation)
+                continuation_reference.run_dir = root / 'continuation_reference'; continuation_reference.resume = False
+                continuation_reference.run_dir.mkdir()
+                research.execute(continuation_reference)
+                uninterrupted = torch.load(continuation_reference.run_dir / 'research_latest.pth', weights_only=False)
+                self.assertEqual(continued['history'], uninterrupted['history'])
+                for key, value in continued['model_state_dict'].items():
+                    torch.testing.assert_close(value, uninterrupted['model_state_dict'][key], rtol=0, atol=0)
+                inherited = torch.load(source_path, weights_only=False)
+                self.assertEqual(continued['initial_state_sha256'], research.state_hash(inherited['model_state_dict']))
+                self.assertEqual(continued['history'][0]['source_plus_additional_epoch'], metadata['source_plus_additional_epoch'] + 1)
+                proof = physical.read(continuation.run_dir / 'research_source_reproduction.json')
+                self.assertTrue(proof['passed'])
+                self.assertEqual(file_hash(source_path), source_hash)
+                result = physical.read(continuation.run_dir / 'summary.json')
+                self.assertGreaterEqual(result['best_validation_metrics']['5']['mean_bilateral_patient_dice'],
+                                        source_summary['best_validation_metrics']['5']['mean_bilateral_patient_dice'] - 1e-8)
             self.assertEqual(resumed['history'], reference['history'])
             for key, value in reference['model_state_dict'].items():
                 torch.testing.assert_close(resumed['model_state_dict'][key], value, rtol=0, atol=0)

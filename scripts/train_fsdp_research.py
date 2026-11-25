@@ -34,6 +34,77 @@ def code_signature():
     return {name: file_hash(Path(__file__).with_name(name)) for name in (*base.CODE_FILES, *EXTRA_FILES)}
 
 
+def inspect_research_source(folder, control):
+    folder = folder.resolve()
+    config, summary = [data.read(folder / name) for name in ('config.json', 'summary.json')]
+    if (not summary['complete'] or summary['variant'] != 'history' or config['variant'] != 'history'
+            or config['experiment'] != 'fsdp_research_screening' or summary['test_images_read']
+            or summary['train_patients'] != 54 or summary['validation_patients'] != 10
+            or summary['detail_grid'] != [32] * 3 or summary['token_grid'] != [8] * 3
+            or summary['oracle_clicks_per_side'] != [1, 5]
+            or summary['foundation'] != config['foundation']
+            or config['foundation'] != control['foundation']
+            or config['cache_sha256'] != control['cache_sha256']
+            or config['manifest_sha256'] != control['manifest_sha256']
+            or config['physical_policy'] != control['physical_policy']):
+        raise ValueError('Expected a completed history arm from the same frozen foundation/cache/protocol')
+    computational = tuple(dict.fromkeys((*base.CODE_FILES, 'fsdp_research_model.py', 'fsdp_research_metrics.py')))
+    if any(file_hash(Path(__file__).with_name(name)) != config['code_sha256'][name] for name in computational):
+        raise ValueError('Source history model/data/metric implementation changed')
+    expected_versions = {**control['versions'], 'scipy': importlib.metadata.version('scipy')}
+    if config['versions'] != expected_versions:
+        raise ValueError('Source history package versions changed')
+    recipe = ('seed', 'precision', 'augmentation', 'accumulation', 'auxiliary_weight', 'val_every', 'min_delta')
+    if any(config['parameters'][key] != control[key] for key in recipe):
+        raise ValueError('Source history evaluation/training recipe differs from the frozen foundation')
+    if file_hash(folder / 'research_best.pth') != summary['best_checkpoint_sha256']:
+        raise ValueError('Source history checkpoint checksum differs')
+    threshold = summary['threshold']
+    score = summary['best_validation_metrics']['5']['mean_bilateral_patient_dice']
+    if (not math.isfinite(threshold) or not 0 < threshold < 1 or not math.isfinite(score)
+            or not 0 <= score <= 1 or not 0 <= summary['best_epoch'] <= summary['completed_epochs']):
+        raise ValueError('Source history selection metadata is invalid')
+    origin = config.get('research_source', {}).get('source_plus_additional_epoch', config['foundation']['source_best_epoch'])
+    return {'directory': str(folder), 'checkpoint_sha256': summary['best_checkpoint_sha256'],
+            'config_sha256': file_hash(folder / 'config.json'), 'summary_sha256': file_hash(folder / 'summary.json'),
+            'best_epoch': summary['best_epoch'], 'source_plus_additional_epoch': origin + summary['best_epoch'],
+            'threshold': threshold, 'expected_train': summary['best_frozen_training_metrics'],
+            'expected_validation': summary['best_validation_metrics'],
+            'expected_validation_fixed_0_5': summary['validation_control_fixed_0_5'],
+            'optimizer_policy': 'inherit best model weights; fresh optimizer/scheduler/scaler and explicit new LR/budget'}
+
+
+def load_research_source(model, source):
+    folder = Path(source['directory'])
+    for name, key in (('config.json', 'config_sha256'), ('summary.json', 'summary_sha256'),
+                      ('research_best.pth', 'checkpoint_sha256')):
+        if file_hash(folder / name) != source[key]:
+            raise ValueError(f'Source history artifact changed before load: {name}')
+    saved = torch.load(folder / 'research_best.pth', map_location='cpu', weights_only=False)
+    if (saved['config'] != data.read(folder / 'config.json') or saved['epoch'] != source['best_epoch']
+            or saved['best_epoch'] != source['best_epoch'] or saved['best_threshold'] != source['threshold']
+            or abs(saved['best_score'] - source['expected_validation']['5']['mean_bilateral_patient_dice']) > 1e-8):
+        raise ValueError('Source history checkpoint metadata differs')
+    model.load_state_dict(saved['model_state_dict'], strict=True)
+    print(f'Loaded trained history best checkpoint at source epoch {source["best_epoch"]}; '
+          'starting a new continuation with a fresh optimizer', flush=True)
+
+
+def verify_research_source(threshold, training, validation, source):
+    if threshold != source['threshold']:
+        raise ValueError('Source history train-calibrated threshold does not reproduce')
+    for bundle, expected in ((training, source['expected_train']), (validation, source['expected_validation'])):
+        for clicks in (1, 5):
+            actual = bundle['refined'][clicks][threshold]['metrics']['mean_bilateral_patient_dice']
+            if not math.isfinite(actual) or abs(actual - expected[str(clicks)]['mean_bilateral_patient_dice']) > 1e-4:
+                raise ValueError('Source history train/validation Dice does not reproduce')
+    fixed = validation['refined'][5][.5]['metrics']['mean_bilateral_patient_dice']
+    if not math.isfinite(fixed) or abs(fixed - source['expected_validation_fixed_0_5']['mean_bilateral_patient_dice']) > 1e-4:
+        raise ValueError('Source history fixed-threshold validation does not reproduce')
+    score = validation['refined'][5][threshold]['metrics']['mean_bilateral_patient_dice']
+    print(f'Trained history source reproduced before optimizer updates: validation Dice@5={score:.4%}', flush=True)
+
+
 def prepare(args):
     old, previous = foundation.inspect_foundation(args.foundation_run_dir, args.source_root, args.verified_cache)
     args.source_best_epoch = previous['best_epoch']
@@ -47,6 +118,12 @@ def prepare(args):
     source_args = copy.copy(args)
     source_args.run_dir = inputs
     prepared, control = foundation.prepare_foundation(source_args)
+    source = None
+    if getattr(args, 'research_source_dir', None) is not None:
+        if args.variant != 'history':
+            raise ValueError('Research continuation currently supports history only')
+        source = inspect_research_source(args.research_source_dir, control)
+        args.source_best_epoch = source['source_plus_additional_epoch']
     config = {'experiment': 'fsdp_research_screening', 'variant': args.variant,
         'parameters': {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items() if k != 'resume'},
         'foundation': control['foundation'], 'cache_sha256': control['cache_sha256'],
@@ -67,6 +144,8 @@ def prepare(args):
             'augmentation': 'same LR reflection as paired CT/GT/context; intensity gain/shift do not change distances'},
         'evaluation_protocol': 'same cached GT-side ROI;5oracle clicks/side; train-only threshold; native full-target patient-macro Dice',
         'test_images_read': False}
+    if source is not None:
+        config['research_source'] = source
     if args.resume:
         if data.read(args.run_dir / 'config.json') != config:
             raise ValueError('Research resume config/code/source changed')
@@ -223,7 +302,8 @@ def verify_exports(prepared, validation, threshold, output):
 def execute(args):
     started = time.monotonic()
     prepared, config = prepare(args)
-    args.source_best_epoch = config['foundation']['source_best_epoch']
+    source = config.get('research_source')
+    args.source_best_epoch = source['source_plus_additional_epoch'] if source else config['foundation']['source_best_epoch']
     random.seed(args.seed); np.random.seed(args.seed); torch.manual_seed(args.seed)
     device = torch.device(args.device)
     memory_budget = allocator_limit(device)
@@ -257,6 +337,12 @@ def execute(args):
         if not torch.equal(model.state_dict()[key].cpu(), value):
             raise ValueError('Research adaptation changed a learned foundation tensor')
     del original, original_state
+    if source:
+        load_research_source(model, source)
+        if args.resume:
+            proof = data.read(args.run_dir / 'research_source_reproduction.json')
+            if not proof['passed'] or proof['source'] != source:
+                raise ValueError('Research continuation resume requires verified source reproduction')
     initial_hash = state_hash(model.state_dict())
     optimizer = torch.optim.AdamW([
         {'params': model.sam.parameters(), 'lr': args.sam_lr, 'weight_decay': .01},
@@ -295,7 +381,12 @@ def execute(args):
     if not args.resume:
         probe = gradient_probe(model, prepared, args, criterion, device)
         threshold, training, validation = base.calibrate_validate(model, prepared, device, args.seed)
-        if args.variant in ('control', 'boundary', 'refiner'):
+        if source:
+            verify_research_source(threshold, training, validation, source)
+            data.save(args.run_dir / 'research_source_reproduction.json', {'passed': True, 'optimizer_updates': 0,
+                'threshold': threshold, 'train': metric_map(training, threshold), 'val': metric_map(validation, threshold),
+                'source': source})
+        elif args.variant in ('control', 'boundary', 'refiner'):
             foundation.verify_reproduction(threshold, training, validation, config['foundation'])
         best_threshold = threshold
         best = validation['refined'][5][threshold]['metrics']['mean_bilateral_patient_dice']
@@ -303,6 +394,8 @@ def execute(args):
         early = {'anchor': best, 'last_improvement_epoch': 0}
         data.save(args.run_dir / 'preflight.json', {'passed': True, 'gradient_probe': probe,
             'foundation_weights_preserved': True, 'initial_metrics': initial, 'model_state_sha256': initial_hash,
+            'initialization_source': 'trained_history_best' if source else 'original_foundation',
+            'research_source_reproduced': bool(source),
             'parameter_counts': {'total': sum(p.numel() for p in model.parameters()),
                                  'trainable': sum(p.numel() for p in model.parameters() if p.requires_grad),
                                  'new_local_refiner': sum(p.numel() for p in model.research_refiner.parameters())
@@ -373,6 +466,10 @@ def execute(args):
         'protocol': config['evaluation_protocol'], 'detail_grid': [32] * 3, 'token_grid': [8] * 3,
         'interpretation': 'Controlled research screen; history changes prompt information. GT-assisted validation, not automatic test performance.',
         'artifacts': str(args.run_dir), 'archive': str(args.run_dir / 'results.tar.gz')}
+    if source:
+        summary.update(research_source=source, validation_change_vs_research_source=best - source['expected_validation']['5']['mean_bilateral_patient_dice'],
+                       initialization='trained history best weights; fresh optimizer and explicit LR/budget; source checkpoint is epoch0 selection candidate',
+                       interpretation='History continuation with an extended budget and no matched control; same GT-assisted validation protocol, not automatic test performance.')
     data.save(args.run_dir / 'report.json', summary)
     with tarfile.open(args.run_dir / 'results.tar.gz', 'w:gz') as archive:
         archive.add(output, arcname='results/best_validation')
@@ -380,6 +477,8 @@ def execute(args):
             archive.add(args.run_dir / name, arcname='results/' + name)
         if (args.run_dir / 'resume_hardware.json').exists():
             archive.add(args.run_dir / 'resume_hardware.json', arcname='results/resume_hardware.json')
+        if source:
+            archive.add(args.run_dir / 'research_source_reproduction.json', arcname='results/research_source_reproduction.json')
         for name in ('source_verification.json', 'cache_target_verification.json'):
             path = args.run_dir / 'foundation_inputs' / name
             if path.exists():
@@ -393,6 +492,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--foundation-run-dir', type=Path, required=True)
     parser.add_argument('--source-root', type=Path)
+    parser.add_argument('--research-source-dir', type=Path, help='Completed history arm whose best model weights initialize this continuation')
     parser.add_argument('--verified-cache', action='store_true')
     parser.add_argument('--run-dir', type=Path, required=True)
     parser.add_argument('--variant', choices=VARIANTS, required=True)
@@ -412,10 +512,16 @@ def main():
     args.run_dir = args.run_dir.expanduser().resolve()
     if args.source_root:
         args.source_root = args.source_root.expanduser().resolve()
+    if args.research_source_dir:
+        args.research_source_dir = args.research_source_dir.expanduser().resolve()
+        if args.variant != 'history':
+            parser.error('A research source requires variant history')
     old, _ = foundation.inspect_foundation(args.foundation_run_dir, args.source_root, args.verified_cache)
     control = data.read(Path(old['cohort_run_dir']) / 'config.json')
     protected = [args.foundation_run_dir, Path(old['sam_dir']).resolve(), Path(old['cohort_run_dir']).resolve(),
                  Path(control['data_dir']).resolve(), Path(control['source_root']).resolve()]
+    if args.research_source_dir:
+        protected.append(args.research_source_dir)
     if args.source_root:
         protected.append(args.source_root)
     if any(args.run_dir.is_relative_to(p) for p in protected):
