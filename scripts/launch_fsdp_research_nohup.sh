@@ -20,6 +20,16 @@ if [[ -n "${FSDP_RESEARCH_SOURCE_DIR:-}" ]]; then
   SOURCE_ARM="$(python -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).expanduser().resolve(strict=True))' "$FSDP_RESEARCH_SOURCE_DIR")"
   COMMAND+=(--research-source-dir "$SOURCE_ARM")
 fi
+case "${FSDP_HISTORY_ROI_JITTER:-0}" in
+  0) ;;
+  1)
+    if [[ -z "${FSDP_RESEARCH_SOURCE_DIR:-}" || -z "${FSDP_MATCHED_CONTROL_DIR:-}" ]]; then
+      echo "ROI jitter needs FSDP_RESEARCH_SOURCE_DIR and FSDP_MATCHED_CONTROL_DIR." >&2; exit 2
+    fi
+    CONTROL_ARM="$(python -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).expanduser().resolve(strict=True))' "$FSDP_MATCHED_CONTROL_DIR")"
+    COMMAND+=(--roi-jitter --matched-control-dir "$CONTROL_ARM") ;;
+  *) echo "FSDP_HISTORY_ROI_JITTER must be0or1." >&2; exit 2 ;;
+esac
 case "${FSDP_VERIFIED_CACHE:-1}" in
   0) ;;
   1) COMMAND+=(--verified-cache) ;;

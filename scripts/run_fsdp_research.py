@@ -97,6 +97,8 @@ def execute(args):
             command.append('--verified-cache')
         if source:
             command.extend(['--research-source-dir', str(source)])
+        if getattr(args, 'roi_jitter', False):
+            command.extend(['--roi-jitter', '--matched-control-dir', str(args.matched_control_dir)])
         if args.resume and (child / 'summary.json').exists():
             summary = data.read(child / 'summary.json')
             if (not summary['complete'] or summary['variant'] != variant or summary['test_images_read']
@@ -134,19 +136,24 @@ def execute(args):
         if source:
             entry['research_source'] = summary['research_source']
             entry['delta_vs_research_source'] = summary['validation_change_vs_research_source']
+        if getattr(args, 'roi_jitter', False):
+            for key in ('roi_jitter', 'matched_control', 'validation_change_vs_matched_control'):
+                entry[key] = summary[key]
         entries.append(entry)
         data.save(args.run_dir / 'progress.json', {'complete': False, 'active_variant': None,
             'entries': entries, 'test_images_read': False})
     control = next((entry['best_validation_metrics']['5']['mean_bilateral_patient_dice']
                     for entry in entries if entry['variant'] == 'control'), None)
     for entry in entries:
-        entry['delta_vs_matched_control'] = (entry['best_validation_metrics']['5']['mean_bilateral_patient_dice'] - control
-                                            if control is not None else None)
+        entry['delta_vs_matched_control'] = entry.get('validation_change_vs_matched_control',
+            entry['best_validation_metrics']['5']['mean_bilateral_patient_dice'] - control if control is not None else None)
     report = {'complete': True, 'entries': entries, 'gpu': data.read(args.gpu_record) if args.gpu_record else None,
         'test_images_read': False, 'validation_images_read': True, 'epochs_per_arm': args.epochs,
         'interpretation': ('History continuation from a completed best checkpoint; new optimizer/schedule; no matched control for the extended budget.'
                            if source else 'Research screen; one controlled change per arm. History changes prompt information; no automatic model promotion.'),
         'archive': str(args.run_dir / 'results.tar.gz')}
+    if getattr(args, 'roi_jitter', False):
+        report['interpretation'] = 'Train-only paired ROI translation ablation; completed matched continuation control; same GT-assisted evaluation.'
     data.save(args.run_dir / 'report.json', report)
     with tarfile.open(args.run_dir / 'results.tar.gz', 'w:gz') as archive:
         archive.add(args.run_dir / 'report.json', arcname='research/summary.json')
@@ -165,6 +172,8 @@ def main():
     parser.add_argument('--foundation-run-dir', type=Path, required=True)
     parser.add_argument('--source-root', type=Path)
     parser.add_argument('--research-source-dir', type=Path)
+    parser.add_argument('--roi-jitter', action='store_true')
+    parser.add_argument('--matched-control-dir', type=Path)
     parser.add_argument('--verified-cache', action='store_true')
     parser.add_argument('--run-dir', type=Path, required=True)
     parser.add_argument('--gpu-record', type=Path)
@@ -176,11 +185,13 @@ def main():
     parser.add_argument('--device', default='cuda:0')
     parser.add_argument('--resume', action='store_true')
     args = parser.parse_args()
+    if args.roi_jitter != bool(args.matched_control_dir) or (args.roi_jitter and not args.research_source_dir):
+        parser.error('ROI jitter requires a trained history source and a matched control directory together')
     if (args.epochs < 1 or args.patience_epochs < 0 or not math.isfinite(args.lr_multiplier)
             or not 0 < args.lr_multiplier < 1 or not math.isfinite(args.boundary_weight) or args.boundary_weight <= 0
             or not math.isfinite(args.boundary_clip_mm) or args.boundary_clip_mm <= 0):
         parser.error('Invalid research budget/objective')
-    for key in ('foundation_run_dir', 'run_dir', 'source_root', 'gpu_record', 'research_source_dir'):
+    for key in ('foundation_run_dir', 'run_dir', 'source_root', 'gpu_record', 'research_source_dir', 'matched_control_dir'):
         if getattr(args, key) is not None:
             setattr(args, key, getattr(args, key).expanduser().resolve())
     old, _ = inspect_foundation(args.foundation_run_dir, args.source_root, args.verified_cache)
@@ -191,6 +202,8 @@ def main():
         protected.append(args.source_root)
     if args.research_source_dir:
         protected.append(args.research_source_dir)
+    if args.matched_control_dir:
+        protected.append(args.matched_control_dir)
     if any(args.run_dir.is_relative_to(p) for p in protected):
         parser.error('Research outputs must be outside original data/foundation')
     if args.resume:

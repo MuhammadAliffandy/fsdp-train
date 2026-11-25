@@ -1298,7 +1298,7 @@ python -m json.tool outputs/private/fsdp_resolution_remaining/latest/tokens_sign
 
 ### Audit the remaining Dice bottleneck without another GPU run
 
-The history continuation stopped25/100with selected epoch0and unchanged49.18%validation Dice. This does not establish whether its last-epoch training fit increased or remained limited. Inspect the stored artifacts:
+The history continuation stopped25/100with selected epoch0and unchanged49.18%validation Dice. The artifact audit below separates that selected score from the measured learning curve:
 
 ```bash
 cd ~/raid/Clara/fsdp-train && git pull --ff-only origin main && \
@@ -1306,3 +1306,23 @@ python scripts/inspect_fsdp_bottleneck.py --run-dir outputs/private/fsdp_researc
 ```
 
 The stdlib-only inspector reads summary/config/history and selected native patient CSVs, verifies confusion counts and summary means, separates selected metrics from the measured learning curve, reports FP/FN/volume ratios and per-patient original history/control changes, and shows the physical spacing of fusion/token cells. It does not load images/weights/cache tensors, allocate a GPU, modify training artifacts or read test data. Parent reports may be supplied directly; the history arm is resolved within that parent. A descriptive pattern flag is a hypothesis rather than a causal diagnosis or an automated training decision. The updated research note records conditional experiments and primary sources in `docs/FSDP_RESEARCH_2026-11-24.md`. No40-point gain is promised by increasing epochs, changing threshold or selecting a different metric.
+
+### Test train-only physical translations from the49.18%history source
+
+The DGX artifact audit now shows frozen train53.02→55.76%while validation49.18→45.25%over25additional epochs. Best remains the inherited epoch0. This is consistent with overfitting under that recipe; it does not identify one cause. Several errors are spatial/shape errors even when predicted volume is close to GT, so changing threshold or predicted volume alone is insufficient.
+
+`launch_fsdp_history_jitter_nohup.sh` tests one training change: paired physical translations with probability0.5and maximum1mm per axis, in integer detail voxels. CT/GT/valid support in both detail and SAM context use the same physical displacement. It samples within the existing cached FOV rather than fetching anatomy outside it. Local target margin and foreground/support checks reject unsafe transforms for both views together. CT uses trilinear sampling; labels/support use nearest. Native targets, source cache and evaluation stay unchanged. New prompts are drawn from the translated train targets; the5-click-per-side budget and accumulated history policy are preserved.
+
+It inherits the original completed history best at49.18%, not the last25epoch continuation. The completed `fsdp_research_history_20261125T022714Z_2766483/history` continuation is the matched unjittered control: same source, versions, computational model/data code, physical policy, seed, loss, light augmentation,100epoch cap, LR multiplier0.1and25epoch patience. Different budget/source/recipe/checksum causes refusal. Preflight must reproduce the source scores before updates; source epoch0remains eligible for best selection. This is a single-seed exploratory ablation on repeatedly inspected validation, not a promise of80%Dice.
+
+Run on DGX in the activated environment; GPU7is checked at launch and must have at least48GiBfree for the40GiBallocator budget plus8GiBheadroom. No existing jobs are stopped:
+
+```bash
+cd ~/raid/Clara/fsdp-train && git pull --ff-only origin main && \
+GPU_ID=7 EXCLUDE_GPU_IDS=0,3 ALLOW_GPU_SHARING=1 \
+MIN_FREE_GPU_GIB=48 FSDP_RESEARCH_GPU_MEMORY_GIB=40 \
+FSDP_SOURCE_ROOT="$HOME/raid/normal case_86" FSDP_VERIFIED_CACHE=1 \
+bash scripts/launch_fsdp_history_jitter_nohup.sh
+```
+
+Read `logs/fsdp_research/latest.log` and `outputs/private/fsdp_research/latest/progress.json`. Each measured training epoch includes `roi_jitter_counts` (applied translations, unselected samples, unsafe rejections), so an ineffective/no-op augmentation is visible. Child summary adds `validation_change_vs_matched_control` (Dice units, multiply100for percentage points), policy and control hashes; the parent entry also contains `delta_vs_matched_control`. For strict resume retain the printed run name, set `RESUME=1 FSDP_RESEARCH_RUN_NAME=<original_name>`, and use the same source/control/settings. This launcher starts one history arm, not the old four-arm screen. Test images remain unread.

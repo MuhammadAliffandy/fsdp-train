@@ -27,7 +27,7 @@ from train_private_unet import state_hash
 EXTRA_FILES = ('train_fsdp_foundation.py', 'audit_foundation_sources.py', 'fsdp_verified_cache.py',
                'sam_refine_resolution.py', 'multiclass_model.py', 'fsdp_research_model.py',
                'train_fsdp_research.py', 'run_fsdp_research.py', 'fsdp_research_gpu.py', 'fsdp_research_metrics.py',
-               'fsdp_research_resources.py')
+               'fsdp_research_resources.py', 'fsdp_history_jitter.py')
 
 
 def code_signature():
@@ -146,6 +146,9 @@ def prepare(args):
         'test_images_read': False}
     if source is not None:
         config['research_source'] = source
+    if getattr(args, 'roi_jitter', False):
+        from fsdp_history_jitter import configure_experiment
+        configure_experiment(args, config)
     if args.resume:
         if data.read(args.run_dir / 'config.json') != config:
             raise ValueError('Research resume config/code/source changed')
@@ -157,6 +160,8 @@ def prepare(args):
 
 
 def train_epoch(model, prepared, optimizer, scaler, criterion, device, epoch, args):
+    if getattr(args, 'roi_jitter', False):
+        model.jitter_counts = {}
     source_epoch = epoch + args.source_best_epoch
     stage = base.set_stage(model, source_epoch, 0)
     samples = prepared['samples']['train']
@@ -186,8 +191,11 @@ def train_epoch(model, prepared, optimizer, scaler, criterion, device, epoch, ar
     expected = math.ceil(len(samples) / args.accumulation)
     if updates + skipped != expected:
         raise ValueError('Research optimizer update count differs')
-    return {'loss': float(np.mean(losses)), 'stage': stage, 'optimizer_updates': updates,
-            'amp_skipped_updates': skipped, 'expected_updates': expected}
+    measured = {'loss': float(np.mean(losses)), 'stage': stage, 'optimizer_updates': updates,
+                'amp_skipped_updates': skipped, 'expected_updates': expected}
+    if getattr(args, 'roi_jitter', False):
+        measured['roi_jitter_counts'] = dict(model.jitter_counts)
+    return measured
 
 
 def gradient_probe(model, prepared, args, criterion, device):
@@ -330,7 +338,11 @@ def execute(args):
             raise ValueError('Research resume requires verified foundation reproduction')
     original_state = {k: v.detach().cpu().clone() for k, v in original.state_dict().items()}
     rng = torch.get_rng_state()
-    model = ResearchModel.from_foundation(original, args.variant, args.boundary_weight).to(device)
+    model_class = ResearchModel
+    if getattr(args, 'roi_jitter', False):
+        from fsdp_history_jitter import HistoryJitterModel
+        model_class = HistoryJitterModel
+    model = model_class.from_foundation(original, args.variant, args.boundary_weight).to(device)
     torch.set_rng_state(rng)
     model.amp_dtype = original.amp_dtype
     for key, value in original_state.items():
@@ -470,6 +482,9 @@ def execute(args):
         summary.update(research_source=source, validation_change_vs_research_source=best - source['expected_validation']['5']['mean_bilateral_patient_dice'],
                        initialization='trained history best weights; fresh optimizer and explicit LR/budget; source checkpoint is epoch0 selection candidate',
                        interpretation='History continuation with an extended budget and no matched control; same GT-assisted validation protocol, not automatic test performance.')
+    if 'roi_jitter' in config:
+        from fsdp_history_jitter import comparison
+        summary.update(comparison(config, best))
     data.save(args.run_dir / 'report.json', summary)
     with tarfile.open(args.run_dir / 'results.tar.gz', 'w:gz') as archive:
         archive.add(output, arcname='results/best_validation')
@@ -493,6 +508,8 @@ def main():
     parser.add_argument('--foundation-run-dir', type=Path, required=True)
     parser.add_argument('--source-root', type=Path)
     parser.add_argument('--research-source-dir', type=Path, help='Completed history arm whose best model weights initialize this continuation')
+    parser.add_argument('--roi-jitter', action='store_true', help='Train-only paired physical translation ablation')
+    parser.add_argument('--matched-control-dir', type=Path)
     parser.add_argument('--verified-cache', action='store_true')
     parser.add_argument('--run-dir', type=Path, required=True)
     parser.add_argument('--variant', choices=VARIANTS, required=True)
@@ -516,12 +533,18 @@ def main():
         args.research_source_dir = args.research_source_dir.expanduser().resolve()
         if args.variant != 'history':
             parser.error('A research source requires variant history')
+    if args.roi_jitter != bool(args.matched_control_dir) or (args.roi_jitter and not args.research_source_dir):
+        parser.error('ROI jitter requires a trained history source and a matched control directory together')
+    if args.matched_control_dir:
+        args.matched_control_dir = args.matched_control_dir.expanduser().resolve()
     old, _ = foundation.inspect_foundation(args.foundation_run_dir, args.source_root, args.verified_cache)
     control = data.read(Path(old['cohort_run_dir']) / 'config.json')
     protected = [args.foundation_run_dir, Path(old['sam_dir']).resolve(), Path(old['cohort_run_dir']).resolve(),
                  Path(control['data_dir']).resolve(), Path(control['source_root']).resolve()]
     if args.research_source_dir:
         protected.append(args.research_source_dir)
+    if args.matched_control_dir:
+        protected.append(args.matched_control_dir)
     if args.source_root:
         protected.append(args.source_root)
     if any(args.run_dir.is_relative_to(p) for p in protected):
