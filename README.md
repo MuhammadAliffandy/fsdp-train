@@ -1326,3 +1326,36 @@ bash scripts/launch_fsdp_history_jitter_nohup.sh
 ```
 
 Read `logs/fsdp_research/latest.log` and `outputs/private/fsdp_research/latest/progress.json`. Each measured training epoch includes `roi_jitter_counts` (applied translations, unselected samples, unsafe rejections), so an ineffective/no-op augmentation is visible. Child summary adds `validation_change_vs_matched_control` (Dice units, multiply100for percentage points), policy and control hashes; the parent entry also contains `delta_vs_matched_control`. For strict resume retain the printed run name, set `RESUME=1 FSDP_RESEARCH_RUN_NAME=<original_name>`, and use the same source/control/settings. This launcher starts one history arm, not the old four-arm screen. Test images remain unread.
+
+### Diagnose loss, gradients and two-patient training fit
+
+The completed jitter run `fsdp_research_jitter_20261125T042908Z_3087949` reports49.3824%validation Dice, only+0.1988percentage points over its matched49.1836%control. This supports testing another mechanism; it does not prove a loss defect. The next workflow preserves all existing scientific/runtime files and source artifacts.
+
+`launch_fsdp_loss_workflow_nohup.sh` snapshots one history best checkpoint and runs four sequential stages on one checked GPU:
+
+1. Gradient audit on train_01/train_02/train_53(both sides). Separates detail Dice/BCE and context Dice/BCE, reports foreground/background logit gradients, per-module norms, detail/context cosine, clipping factors, and hypothetical AdamW update-to-weight ratios. The latter uses stored moments and next LR on copies for one ROI, not the actual accumulated eight-ROI update. No optimizer updates occur in this stage.
+2. Tiny control on train_01/train_02, original loss.
+3. Tiny loss candidate, changing only detail BCE to capped normalized positive weighting: `w=min(8,max(1,sqrt(Nbg/Nfg)))`, divide weighted BCE by its mean voxel weight. Original squared Dice and context criterion stay fixed.
+4. Tiny auxiliary candidate, changing only context coefficient0.25→0.1.
+
+The three tiny fits inherit identical full source weights, use five oracle clicks/side, no augmentation, source-selected fixed threshold, AdamW SAM LR1e-5/CNN LR1e-4, clipping1.0, four updates/epoch without accumulation, and100epoch cap/evaluation every5plus first/final. They stop if minimum side AND minimum bilateral patient Dice reach85%; source epoch0is included in selection. This is an explicit memorization recipe shared across tiny arms, not the cohort schedule and not a claim of85%validation. Each arm starts independently; no winner automatically becomes a cohort model. Best weights and latest state are saved, but this diagnostic currently has no automatic resume command.
+
+Positive weighting can trade recall against precision; this is particularly relevant because current predictions already include excess foreground. See the [PyTorch BCEWithLogitsLoss documentation](https://docs.pytorch.org/docs/stable/generated/torch.nn.BCEWithLogitsLoss.html). Gradient size alone cannot select a loss. Augmentation remains disabled during memorization diagnosis; existing paired jitter can be tested on a matched cohort control after fit is understood. Augmented variants of a patient do not add independent patients. No sharpening or anatomy-distorting default augmentation was introduced.
+
+Run after pulling, with `fsdp-med3d` activated:
+
+```bash
+GPU_ID=7 ALLOW_GPU_SHARING=1 EXCLUDE_GPU_IDS=0,3 \
+FSDP_SOURCE_ROOT="$HOME/raid/normal case_86" \
+FSDP_LOSS_SOURCE_DIR="runs/fsdp_research_jitter_20261125T042908Z_3087949/history" \
+bash scripts/launch_fsdp_loss_workflow_nohup.sh
+```
+
+The launcher checks GPU capacity (40GiBallocator budget plus8GiBheadroom) and refuses an already active loss workflow. Parent checks output filesystem free space (at least10GiB, or10times source checkpoint size if greater) before snapshotting. Source/config and diagnostic code are frozen across stages. Existing jobs are not stopped. The report includes disk space at launch. A full root filesystem alert warrants checking the actual output mount; it does not explain low Dice by itself.
+
+```bash
+tail -n 80 -f logs/fsdp_loss_workflow/latest.log
+python -m json.tool outputs/private/fsdp_loss_workflow/latest/summary.json
+```
+
+Outputs are isolated from research/resolution logs. Individual reports are under `audit/summary.json`, `tiny_control/summary.json`, `tiny_balanced/summary.json`, and `tiny_auxiliary/summary.json`. A failed child suppresses later stages. The source cache contains train/validation tensors, so reports explicitly disclose cached validation deserialization/target-integrity checks; gradients and tiny inference use only training cases. No raw validation files, validation inference, test images or replacement labels are used. The diagnostic snapshot itself is stored privately, not in a shareable report archive.
