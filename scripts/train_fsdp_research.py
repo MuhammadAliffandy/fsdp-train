@@ -27,7 +27,9 @@ from train_private_unet import state_hash
 EXTRA_FILES = ('train_fsdp_foundation.py', 'audit_foundation_sources.py', 'fsdp_verified_cache.py',
                'sam_refine_resolution.py', 'multiclass_model.py', 'fsdp_research_model.py',
                'train_fsdp_research.py', 'run_fsdp_research.py', 'fsdp_research_gpu.py', 'fsdp_research_metrics.py',
-               'fsdp_research_resources.py', 'fsdp_history_jitter.py')
+               'fsdp_research_resources.py', 'fsdp_history_jitter.py',
+               'fsdp_loss_cohort.py', 'train_fsdp_loss_cohort.py', 'run_fsdp_loss_cohort.py',
+               'train_fsdp_loss_tiny.py', 'fsdp_loss_diagnostics.py')
 
 
 def code_signature():
@@ -105,7 +107,7 @@ def verify_research_source(threshold, training, validation, source):
     print(f'Trained history source reproduced before optimizer updates: validation Dice@5={score:.4%}', flush=True)
 
 
-def prepare(args):
+def prepare(args, configure=None):
     old, previous = foundation.inspect_foundation(args.foundation_run_dir, args.source_root, args.verified_cache)
     args.source_best_epoch = previous['best_epoch']
     args.sam_dir, args.checkpoint, args.cohort_run_dir = [Path(old[k]).resolve() for k in ('sam_dir', 'checkpoint', 'cohort_run_dir')]
@@ -149,6 +151,8 @@ def prepare(args):
     if getattr(args, 'roi_jitter', False):
         from fsdp_history_jitter import configure_experiment
         configure_experiment(args, config)
+    if configure is not None:
+        configure(args, config)
     if args.resume:
         if data.read(args.run_dir / 'config.json') != config:
             raise ValueError('Research resume config/code/source changed')
@@ -160,7 +164,8 @@ def prepare(args):
 
 
 def train_epoch(model, prepared, optimizer, scaler, criterion, device, epoch, args):
-    if getattr(args, 'roi_jitter', False):
+    record_jitter = getattr(args, 'roi_jitter', False) or getattr(args, 'record_jitter_counts', False)
+    if record_jitter:
         model.jitter_counts = {}
     source_epoch = epoch + args.source_best_epoch
     stage = base.set_stage(model, source_epoch, 0)
@@ -168,6 +173,7 @@ def train_epoch(model, prepared, optimizer, scaler, criterion, device, epoch, ar
     order = torch.randperm(len(samples), generator=torch.Generator().manual_seed(args.seed + source_epoch)).tolist()
     optimizer.zero_grad(set_to_none=True)
     losses, updates, skipped = [], 0, 0
+    gradient_norms = []
     for step, index in enumerate(order):
         loss, _ = run_sample(model, samples[index], device, args.seed + source_epoch * 1000 + step,
                              criterion, args.augmentation == 'light', args.auxiliary_weight)
@@ -179,6 +185,8 @@ def train_epoch(model, prepared, optimizer, scaler, criterion, device, epoch, ar
         if should_step:
             scaler.unscale_(optimizer)
             norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.)
+            if getattr(args, 'record_gradient_stats', False):
+                gradient_norms.append(float(norm))
             if not torch.isfinite(norm) and not scaler.is_enabled():
                 raise ValueError('Nonfinite research gradients')
             previous = scaler.get_scale()
@@ -193,8 +201,13 @@ def train_epoch(model, prepared, optimizer, scaler, criterion, device, epoch, ar
         raise ValueError('Research optimizer update count differs')
     measured = {'loss': float(np.mean(losses)), 'stage': stage, 'optimizer_updates': updates,
                 'amp_skipped_updates': skipped, 'expected_updates': expected}
-    if getattr(args, 'roi_jitter', False):
+    if record_jitter:
         measured['roi_jitter_counts'] = dict(model.jitter_counts)
+    if getattr(args, 'record_gradient_stats', False):
+        measured['gradient_norm_before_clipping_mean'] = float(np.mean(gradient_norms))
+        measured['gradient_clip_fraction'] = sum(value > 1. for value in gradient_norms) / len(gradient_norms)
+    if hasattr(args, 'loss_arm'):
+        measured['loss_arm'] = args.loss_arm
     return measured
 
 
@@ -307,9 +320,9 @@ def verify_exports(prepared, validation, threshold, output):
             'scope': 'diagnostic tolerances0.5/1mm; not clinical acceptance thresholds'}
 
 
-def execute(args):
+def execute(args, configure=None, adapt_model=None, finish_summary=None):
     started = time.monotonic()
-    prepared, config = prepare(args)
+    prepared, config = prepare(args) if configure is None else prepare(args, configure)
     source = config.get('research_source')
     args.source_best_epoch = source['source_plus_additional_epoch'] if source else config['foundation']['source_best_epoch']
     random.seed(args.seed); np.random.seed(args.seed); torch.manual_seed(args.seed)
@@ -339,10 +352,11 @@ def execute(args):
     original_state = {k: v.detach().cpu().clone() for k, v in original.state_dict().items()}
     rng = torch.get_rng_state()
     model_class = ResearchModel
-    if getattr(args, 'roi_jitter', False):
+    if adapt_model is None and getattr(args, 'roi_jitter', False):
         from fsdp_history_jitter import HistoryJitterModel
         model_class = HistoryJitterModel
-    model = model_class.from_foundation(original, args.variant, args.boundary_weight).to(device)
+    model = (model_class.from_foundation(original, args.variant, args.boundary_weight)
+             if adapt_model is None else adapt_model(original, args, config)).to(device)
     torch.set_rng_state(rng)
     model.amp_dtype = original.amp_dtype
     for key, value in original_state.items():
@@ -485,6 +499,8 @@ def execute(args):
     if 'roi_jitter' in config:
         from fsdp_history_jitter import comparison
         summary.update(comparison(config, best))
+    if finish_summary is not None:
+        finish_summary(summary, config)
     data.save(args.run_dir / 'report.json', summary)
     with tarfile.open(args.run_dir / 'results.tar.gz', 'w:gz') as archive:
         archive.add(output, arcname='results/best_validation')
@@ -503,7 +519,7 @@ def execute(args):
     print(json.dumps(summary, indent=2), flush=True)
 
 
-def main():
+def main(configure=None, adapt_model=None, finish_summary=None, extend_parser=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--foundation-run-dir', type=Path, required=True)
     parser.add_argument('--source-root', type=Path)
@@ -520,6 +536,8 @@ def main():
     parser.add_argument('--boundary-clip-mm', type=float, default=5.)
     parser.add_argument('--device', default='cuda:0')
     parser.add_argument('--resume', action='store_true')
+    if extend_parser is not None:
+        extend_parser(parser)
     args = parser.parse_args()
     if (args.epochs < 1 or args.patience_epochs < 0 or not math.isfinite(args.lr_multiplier)
             or not 0 < args.lr_multiplier < 1 or not math.isfinite(args.boundary_weight) or args.boundary_weight <= 0
@@ -559,7 +577,10 @@ def main():
         parser.error('Requested CUDA/BF16 device unavailable')
     try:
         data.save(args.run_dir / 'progress.json', {'complete': False, 'phase': 'verifying_foundation', 'test_images_read': False})
-        execute(args)
+        if configure is None and adapt_model is None and finish_summary is None:
+            execute(args)
+        else:
+            execute(args, configure, adapt_model, finish_summary)
     except Exception as error:
         data.save(args.run_dir / 'failure.json', {'type': type(error).__name__, 'error': str(error)})
         raise

@@ -1359,3 +1359,39 @@ python -m json.tool outputs/private/fsdp_loss_workflow/latest/summary.json
 ```
 
 Outputs are isolated from research/resolution logs. Individual reports are under `audit/summary.json`, `tiny_control/summary.json`, `tiny_balanced/summary.json`, and `tiny_auxiliary/summary.json`. A failed child suppresses later stages. The source cache contains train/validation tensors, so reports explicitly disclose cached validation deserialization/target-integrity checks; gradients and tiny inference use only training cases. No raw validation files, validation inference, test images or replacement labels are used. The diagnostic snapshot itself is stored privately, not in a shareable report archive.
+
+### Full54patient training after the completed tiny-fit diagnosis
+
+DGX diagnostics `fsdp_loss_20261125T062514Z_3438178` passed all three85%minimum-fit gates. Control reached mean training87.41%at35epochs, balanced86.72%at25, auxiliary86.69%at35. Earlier goal crossing for balanced is a screening observation, not a statistical speed claim or validation winner. Original loss can fit these two patients; a defective loss or auxiliary conflict is not established. The pasted log reports the audit output path but not its gradient measurements.
+
+The full-cohort launcher runs **control then balanced**, each on the frozen54train/10validation patients (108/20side ROIs). Both inherit the full cohort49.38%history checkpoint matching the diagnostic snapshot SHA256, and verify the two train-only fit proofs. Tiny-fit weights are not used as the cohort initialization. Original foundation45.63%and selected history source49.38%must reproduce before optimizer updates. The inherited source is retained as an epoch0selection candidate.
+
+Shared new recipe defaults:150additional epoch cap per arm, LR multiplier0.3of original SAM/CNN LR (normally3e-6/3e-5), accumulation4(27attempted updates/epoch),5epoch warmup/cosine, validation every5plus first/final,30epoch early-stop patience/min_delta0.001. Both use the original light paired reflection/intensity augmentation plus50%physical translations up to1mm/axis with target-preservation guards. Squared Dice and auxiliary0.25remain fixed; only detail BCE changes between the two arms. These LR/update/augmentation settings differ jointly from the old continuation, so comparison against the old run is a new-recipe experiment, not a loss-only attribution. Actual cohort defaults can be overridden explicitly; resume requires the same settings.
+
+```bash
+cd ~/raid/Clara/fsdp-train && git pull --ff-only origin main && \
+GPU_ID=7 ALLOW_GPU_SHARING=1 EXCLUDE_GPU_IDS=0,3 \
+FSDP_SOURCE_ROOT="$HOME/raid/normal case_86" \
+bash scripts/launch_fsdp_loss_cohort_nohup.sh
+```
+
+Run with `fsdp-med3d` activated. No extra permission or command is needed between arms. Epoch numbering restarts for balanced because it is an independent same-source experiment. No processes are stopped. GPU UUID selection requires48GiBfree (40GiBallocator cap plus8headroom); output filesystem must have at least12GiBfree or8times source checkpoint size, whichever is larger. The parent has a workflow lock and an active-child guard, freezes source/config/code, stops after a child failure, and skips checksum-verified completed arms on resume.
+
+```bash
+tail -n 80 -f logs/fsdp_loss_cohort/latest.log
+python -m json.tool outputs/private/fsdp_loss_cohort/latest/progress.json
+python -m json.tool outputs/private/fsdp_loss_cohort/latest/summary.json
+```
+
+Each arm writes its own `progress.json`, `history.csv`, `research_best.pth`, `research_latest.pth`, selected native validation exports/overlays, frozen training CSVs and `results.tar.gz`. History includes `loss_arm`, successful/skipped update counts, jitter counts, mean gradient norm before clipping and clipping fraction. Train-only threshold calibration and native full-target patient-macro validation select best weights; fixed0.5validation and1click metrics are controls. Final exports are checked against selected scores and per-patient counts before completion. Parent archive contains reports/child visual archives, not weights/cache, and reports the matched balanced-minus-control validation delta. Patient images in exports remain private.
+
+Strict interrupted resume restores model/optimizer/scheduler/scaler/early-stop/history/RNG and uses the original run name printed at launch:
+
+```bash
+RESUME=1 FSDP_COHORT_RUN_NAME=fsdp_loss_cohort_ORIGINAL_NAME \
+GPU_ID=7 ALLOW_GPU_SHARING=1 EXCLUDE_GPU_IDS=0,3 \
+FSDP_SOURCE_ROOT="$HOME/raid/normal case_86" \
+bash scripts/launch_fsdp_loss_cohort_nohup.sh
+```
+
+Source/diagnostic overrides are `FSDP_COHORT_SOURCE_DIR` and `FSDP_DIAGNOSTIC_DIR`; defaults point to the completed jitter/history source and diagnostic paths above. Budget overrides are `COHORT_EPOCHS`, `LR_MULTIPLIER`, `PATIENCE_EPOCHS`, and `ACCUMULATION_STEPS`. No test patients are evaluated, no automatic deployment occurs, and tiny training85%does not promise cohort train/validation85%. Best-of-two validation remains exploratory on the repeatedly inspected10patient split.
