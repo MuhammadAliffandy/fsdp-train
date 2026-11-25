@@ -1257,3 +1257,29 @@ bash scripts/launch_fsdp_history_nohup.sh
 ```
 
 The wrapper's default source is the immutable run path above; override `FSDP_RESEARCH_SOURCE_DIR` for another compatible completed history arm. The source path is resolved before updating the research latest link. Log/report locations remain `logs/fsdp_research/latest.log` and `outputs/private/fsdp_research/latest`. The new log counter starts at1; cumulative epoch reporting begins at36for the original source30+history-best5. Look for `Loaded trained history best checkpoint` and `Trained history source reproduced before optimizer updates` before the new training loop. GPU capacity and unprivileged memory/exit diagnostics remain enabled. Strict resume applies to an unfinished new continuation only; retain its run name and all original arguments/source files.
+
+### Finish resolution on GPU0 while history uses GPU7
+
+Parallel execution on separate GPUs can be attempted when server policy and capacity permit. The previous research SIGTERM did not identify its sender and does not establish a server ban on concurrent jobs. The new launcher does not disable signals, stop another job or override scheduler policy.
+
+`launch_fsdp_resolution_remaining_nohup.sh` continues the original `fsdp_resolution_20261124T095541Z_3048501` study. It verifies its original trainer/model/data source hashes and passed audits, skips checksum-verified completed variants, starts tokens, resumes detail from its actual saved checkpoint (reported at epoch3), then starts combined. All use the original45.63%foundation and recorded100epoch cap,0.2LR multiplier and50epoch patience. It preserves the completed70epoch baseline46.51%and does not change history's49.18%source or its active runtime files.
+
+On DGX, explicitly choose physical GPU0:
+
+```bash
+cd ~/raid/Clara/fsdp-train && git pull --ff-only origin main && conda activate fsdp-med3d && \
+RESUME=0 GPU_ID=0 EXCLUDE_GPU_IDS=7 ALLOW_GPU_SHARING=1 \
+MIN_FREE_GPU_GIB=48 FSDP_RESOLUTION_GPU_MEMORY_GIB=40 \
+bash scripts/launch_fsdp_resolution_remaining_nohup.sh
+```
+
+GPU7 is excluded explicitly. The selector also protects GPUs belonging to readable active research parents/compute processes from this project, including a research parent between CUDA phases. UUID pinning ensures the original child's logicalcuda:0is the selected physical GPU0. Capacity must meet the maximum of the free-VRAM floor and allocator budget plus8GiBheadroom. If GPU0has less than48GiBfree with these defaults, nothing is launched; no automatic queue or job displacement occurs. The40GiBPyTorch budget is applied by a new wrapper before delegating to the byte-unchanged original trainer with exactly its original arguments. It is not a measured guarantee that every resolution variant fits. New variants retain the original native-grid and gradient preflights.
+
+An exclusive lock on the original study and scoped active-writer checks prevent simultaneous writes to its child directories. Any failed child stops later launches. Saved optimizer/scheduler/scaler/RNG state is restored by the original strict trainer for unfinished variants. Reports and process/resource diagnostics are separate:
+
+```bash
+tail -n 80 -f logs/fsdp_research/latest.log
+tail -n 80 -f logs/fsdp_resolution_remaining/latest.log
+```
+
+The original per-variant files remain under `outputs/private/fsdp_resolution/latest/train/`; aggregate continuation results appear under `outputs/private/fsdp_resolution_remaining/latest/summary.json`. The old root's interrupted parent progress is not rewritten. The new archive references the completed child exports without including model weights/cache. To resume an interrupted new parent, retain its `FSDP_RESOLUTION_REMAINING_NAME` and set `RESUME=1`; completed children are verified and skipped again. Actual DGX parallel execution and GPU0capacity have not been verified from the local workspace.
