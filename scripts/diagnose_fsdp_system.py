@@ -254,6 +254,7 @@ def build_normalization_candidate(prepared, source_root, output, source_hash):
                 raise ValueError('Candidate changed patient/side identity or order')
             if old['grid'] != new['grid'] or old['native'] != new['native'] or old['metadata'] != new['metadata']:
                 raise ValueError('Candidate changed model/native geometry or target metadata')
+            unchanged['grids'] += 1
             for key, counter in (('native_target', 'native_targets'), ('target', 'model_targets'),
                                  ('sam_target', 'model_targets'), ('valid', 'support_masks'),
                                  ('sam_valid', 'support_masks')):
