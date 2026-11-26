@@ -4,6 +4,8 @@ Catatan harian eksperimen, diagnosis, dan keputusan untuk meningkatkan Dice segm
 
 Ukuran keberhasilan utama adalah mean bilateral patient Dice pada grid asli. Evaluasi SAM memakai ROI yang ditentukan dari ground truth dan titik petunjuk yang dibentuk dari ground truth (oracle clicks). Satu atau lima klik diberikan per sisi, sehingga lima klik per sisi berarti sepuluh titik per pasien. Hasil tersebut merupakan evaluasi segmentasi interaktif dengan bantuan lokasi.
 
+**Keputusan produk, 26 November.** Pengguna mengonfirmasi klien memerlukan segmentasi otomatis dari CT hingga mask FSDP. Evaluasi utama harus memakai nol klik pengguna/oracle dan ROI yang ditentukan sistem dari citra. Seluruh kasus validasi masuk perhitungan, termasuk kegagalan deteksi/lokalisasi. Skor interaktif historis dipakai sebagai benchmark tambahan dengan protokolnya dicantumkan.
+
 ## Log 23 November 2026
 
 | Parameter | Deskripsi |
@@ -195,3 +197,23 @@ tail -n 80 -f logs/fsdp_foundation/latest.log
 | Best epoch tambahan | 5 | 25 | Checkpoint berbeda |
 
 Normalisasi pada laporan full encoder tetap clip −1343 hingga 136,84 dengan mean/std sumber 54 pasien. Dampak saturation D1 dan variasi batas D3 terhadap hasil belum diisolasi oleh percobaan ini. Coarse SAM pada trace klik hybrid mencapai 25,37% validasi@5, tetapi nilai ini memakai interaksi yang diarahkan keluaran hybrid dan belum merupakan pembandingan SAM mandiri. Bukti gradien/parameter aktif DGX belum disertakan dalam summary yang diberikan. Target 80% belum dapat dijanjikan berdasarkan hasil ini.
+
+## Pembaruan 26 November — sasaran segmentasi otomatis dari CT
+
+Pengguna menetapkan segmentasi otomatis sebagai kebutuhan klien. Tujuan operasional adalah CT utuh menjadi mask bilateral FSDP pada geometri asli tanpa titik pengguna maupun titik yang diturunkan dari ground truth. ROI saat evaluasi ditentukan dari citra dan keluaran model. Label tersedia untuk supervisi train dan penilaian prediksi.
+
+Penyesuaian interpretasi eksperimen terdahulu:
+
+- Benchmark SAM 45–49% memakai bantuan ROI ground truth dan lima klik oracle per sisi. Hasil ini mengukur segmentasi interaktif dengan bantuan lokasi.
+- Baseline Physical ResUNet 33,27% memakai nol klik dengan ROI ground truth. Kinerja deteksi lokasi pada CT utuh belum diukur oleh run itu.
+- Target 80% selanjutnya harus dilaporkan sebagai Dice pada prediksi otomatis CT utuh, dengan denominator kasus dan protokol pemilihan model dinyatakan.
+
+Rancangan berikutnya memakai dua tahap yang perlu diimplementasikan dan diuji secara terpisah sebelum penilaian gabungan:
+
+1. **Lokalisasi dari CT.** Model pada citra beresolusi lebih rendah memprediksi wilayah kandidat kanan/kiri. Target supervisi train dapat disusun dari binary native cache bila cakupan target dan geometri seluruh CT berhasil diverifikasi. Laporkan retensi target dalam crop prediksi, kegagalan deteksi per sisi/pasien, dan volume crop pada validasi. Ukuran/margin/fallback ditentukan dari train.
+2. **Segmentasi detail otomatis.** Model detail dilatih pada crop train yang mencakup variasi posisi dan kesalahan lokalisasi. Jika crop prediksi train dipakai, prediksi out-of-fold dapat mengurangi perbedaan tingkat kesulitan dengan deployment. SAM dapat dieksplorasi dengan prompt prediksi dari localizer, atau model nol klik dapat dipakai. Pemilihan decoder mengikuti hasil pembandingan pada input yang sama.
+3. **Penilaian CT utuh.** Prediksi dikembalikan ke native CT dan dibandingkan dengan seluruh target. Target di luar crop ikut menjadi false negative. Kegagalan lokalisasi dicatat dan masuk rata-rata semua pasien. Penilaian segmenter dengan ROI ground truth membantu diagnosis kemampuan segmentasi.
+
+Kebutuhan sebelum implementasi training berikutnya adalah artefak partial/full encoder (config, history, preflight, ekspor skor dan overlay), laporan intensitas D1, serta akses CT train/validation dan binary target cache terverifikasi pada DGX. Masalah normalisasi dan anotasi D1/D3 tetap ditinjau. Data sumber 53 train yang valid dan 10 validation tersedia menurut laporan sebelumnya, sedangkan target cache perlu diverifikasi mampu merepresentasikan seluruh target pada volume CT. Original labels/ColorTable belum tersedia untuk validasi semantik independen.
+
+Status saat keputusan dicatat: rancangan otomatis disusun, localizer dan evaluasi gabungan CT utuh belum dijalankan. Pemilihan backbone, jendela intensitas, resolusi localizer dan crop detail masih menunggu audit train. Protokol akhir ini menjadi acuan interpretasi target klien.
