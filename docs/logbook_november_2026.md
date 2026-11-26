@@ -241,3 +241,7 @@ Status saat keputusan dicatat: rancangan otomatis disusun, localizer dan evaluas
 | **Dokumentasi** | [Panduan baseline otomatis](FSDP_AUTOMATIC_BASELINE_2026-11-26.md), [ekspor dan skor](../scripts/fsdp_auto_nnunet.py), [launcher](../scripts/launch_fsdp_auto_nnunet_nohup.sh). |
 
 GPU DGX belum tersedia saat percobaan peluncuran. GPU 2 melaporkan 73,5 GiB bebas tetapi memiliki PID komputasi aktif, dan pemilih tidak menemukan GPU yang memenuhi syarat tanpa berbagi. Launcher kemudian diperbarui agar mengantre melalui nohup, memeriksa ulang tiap 120 detik sampai 24 jam, serta mulai sendiri bila GPU tanpa proses komputasi dengan 48 GiB bebas tersedia. Tidak ada job lain dihentikan; training belum tercatat mulai pada saat pembaruan ini.
+
+## 26 November 2026 — augmentasi dari benchmark SAM49,47%
+
+Disiapkan kelanjutan SAM CNN32/Turbo8 history dari loss-control terbaik, dengan control dan affine terpisah pada sumber yang sama. Tambahan affine berupa rotasi±5° dan skala0,95–1,05 pada kedua view CT/mask/support dalam koordinat fisik. train_28 dikeluarkan dari kedua arm setelah reproduksi checkpoint sumber. Maksimal100epoch tambahan/arm, patience30. Evaluasi tetap GT-assisted1/5klik,10pasienval,testbelumdibaca. Status: implementasi lokal; training dan hasil perbaikan belum dijalankan dari sesi ini. Panduan: FSDP_SAM_AUGMENTATION_2026-11-26.md.

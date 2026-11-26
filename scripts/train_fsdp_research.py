@@ -28,7 +28,7 @@ EXTRA_FILES = ('train_fsdp_foundation.py', 'audit_foundation_sources.py', 'fsdp_
                'sam_refine_resolution.py', 'multiclass_model.py', 'fsdp_research_model.py',
                'train_fsdp_research.py', 'run_fsdp_research.py', 'fsdp_research_gpu.py', 'fsdp_research_metrics.py',
                'fsdp_research_resources.py', 'fsdp_history_jitter.py',
-               'fsdp_loss_cohort.py', 'train_fsdp_loss_cohort.py', 'run_fsdp_loss_cohort.py',
+               'fsdp_sam_augmentation.py', 'fsdp_loss_cohort.py', 'train_fsdp_loss_cohort.py', 'run_fsdp_loss_cohort.py',
                'train_fsdp_loss_tiny.py', 'fsdp_loss_diagnostics.py')
 
 
@@ -57,6 +57,8 @@ def inspect_research_source(folder, control):
     if config['versions'] != expected_versions:
         raise ValueError('Source history package versions changed')
     recipe = ('seed', 'precision', 'augmentation', 'accumulation', 'auxiliary_weight', 'val_every', 'min_delta')
+    if config.get('training_experiment') == 'full_cohort_loss_ablation':
+        recipe = tuple(key for key in recipe if key != 'accumulation')
     if any(config['parameters'][key] != control[key] for key in recipe):
         raise ValueError('Source history evaluation/training recipe differs from the frozen foundation')
     if file_hash(folder / 'research_best.pth') != summary['best_checkpoint_sha256']:
@@ -429,6 +431,10 @@ def execute(args, configure=None, adapt_model=None, finish_summary=None):
             'detail_grid': [32] * 3, 'token_grid': [8] * 3, 'test_images_read': False})
         atomic_save(args.run_dir / 'research_best.pth', checkpoint(0))
         atomic_save(args.run_dir / 'research_latest.pth', checkpoint(0))
+    if getattr(args, 'exclude_invalid_train28', False):
+        prepared['samples']['train'] = [s for s in prepared['samples']['train'] if s['case'] != 'train_28']
+        prepared['patients']['train'].pop('train_28', None)
+        prepared['excluded_train_aliases'] = ['train_28']
     stopped = args.patience_epochs > 0 and start - early['last_improvement_epoch'] >= args.patience_epochs
     for epoch in range(start, args.epochs) if not stopped else []:
         lrs = [g['lr'] for g in optimizer.param_groups]
