@@ -21,3 +21,17 @@ Default sumber: `runs/fsdp_loss_cohort_20261125T070213Z_3564637/control`. Jika d
 ## Kompatibilitas checkpoint sumber
 
 Pemeriksaan sumber mengenali dua revisi `train_sam_refine32.py` yang telah ditinjau (050cf6f dan14e6ecc) terhadap hash versi sekarang. Perubahan mencakup laporan serta hook opsional eksklusi dan full encoder; jalur default memakai partial encoder dan tidak mengecualikan pasien saat reproduksi sumber. Pengecualian hash hanya berlaku untuk pasangan hash sumber/versi sekarang yang dicatat dalam kode. Seluruh file model/data/metric lainnya harus identik. Rekaman kompatibilitas disimpan dalam config run baru, lalu hash checkpoint, strict state load dan reproduksi Dice train/val1/5klik serta fixed0,5tetap diperiksa sebelum update. Perubahan yang belum dikenal menghasilkan pesan dengan nama file dan kedua hash; tidak ada opsi melewati seluruh pemeriksaan.
+
+## Audit setelah control dan affine selesai
+
+Hasil yang dilaporkan: control49,592%, affine49,983%; selisih+0,391poin persentase. Affine memilih epoch1dan berhenti pada35. Surface Dice pada1mm88,11% mengukur toleransi jarak permukaan, bukan keberhasilan volume80%. Penyebab kegagalan belum dapat ditetapkan dari ringkasan tersebut.
+
+Audit CPU berikut membaca CSV overlap dan metrik permukaan yang sudah diekspor. Audit memeriksa konsistensi Dice dengan TP/prediksi/target, identitas pasien, ringkasan, dan checkpoint sumber antarkedua arm. FP/FN, rasio volume dan perbedaan Dice dicetak untuk setiap pasien;20sisi dicatat terpisah. Ini bukan estimasi pergeseran atau ketebalan secara langsung. Overlay diperlukan untuk membedakan kesalahan posisi dan batas.
+
+```bash
+python scripts/audit_fsdp_sam_results.py \
+  --run-dir runs/sam_augmentation_20261126T084626Z_4096150 \
+  --output-dir "outputs/private/sam_error_audit_$(date -u +%Y%m%dT%H%M%SZ)"
+```
+
+Direktori keluaran memuat `summary.json`, CSV pasien/sisi, perbandingan berpasangan, dan `review_bundle.tar.gz`. Bundle memuat laporan, history dan overlay validasi yang sudah ada; tidak menyertakan checkpoint maupun volume CT. Perubahan selanjutnya dipilih setelah membaca hasil dan overlay: volume berlebih bisa berasal dari batas terlalu lebar atau salah lokasi; FN besar bisa berasal dari target yang terlewat atau mask terlalu sempit. Pemilihan model tambahan dari10pasienyang sama tetap eksploratif karena validasi sudah ditinjau berkali-kali. Tidak ada training lanjutan otomatis dari alat diagnosis ini.
