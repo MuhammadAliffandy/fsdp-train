@@ -1,6 +1,12 @@
 # FSDP system diagnosis and next dataset set
 
-**Status:** evidence review plus a read-only DGX audit workflow. No training was started, no source labels were changed, and the test split remains reserved.
+## Update 26 November 2026
+
+Catatan harian dan rencana diagnosis terbaru tersedia di [logbook November](logbook_november_2026.md). Laporan continuation `fsdp_private_foundation_20261125T155656Z_1188354` mencatat 53 pasien train setelah pengecualian input label map train_28, 10 validation, best epoch tambahan 5, dan early stopping pada 55/100 epoch. Dice train checkpoint terbaik 53,25%, validation 48,09%, serta validation fixed-0,5 47,43%. Checkpoint awal dan normalisasi cache berasal dari cohort 54 pasien. Bagian rencana S0/S1 di bawah merupakan rencana historis sebelum temuan input train_28. Kandidat baru perlu daftar pasien aktif serta statistik train yang sesuai dengan pengecualian tersebut.
+
+Tiga diagnosis yang diprioritaskan adalah saturasi normalisasi input, cakupan encoder yang dilatih, dan konsistensi citra/anotasi antar pasien. Bukti awal, pengukuran yang diperlukan, serta rancangan kontrol/kandidat dicatat di logbook. Dampak sebab-akibat ketiganya terhadap Dice masih perlu diuji.
+
+**Historical status, 25 November:** evidence review plus a read-only DGX audit workflow. Training described by the 26 November update was executed separately on DGX.
 
 ## What the experiments establish
 
@@ -9,12 +15,13 @@ The strongest currently measured result is the Turbo SAM + CNN32 hybrid: **49.47
 | Experiment | Result in the available report | What it tells us | What it does not tell us |
 | --- | --- | --- | --- |
 | Earlier SAM side/zoom/decoder runs | Approximately 19–26% validation in earlier protocols | Early preprocessing and training recipes were weaker | These scores are not directly comparable with the later physical ROI/cache protocol |
-| Physical Turbo SAM + CNN32 foundation | 49.47% validation, five oracle clicks/side | Transfer initialization, local CNN detail and interactive prompts together produce the best measured cohort result | Which single component caused the gain; automatic localization performance |
+| Physical Turbo SAM + CNN32 foundation | 45.63% validation, five oracle clicks/side, selected epoch 30 | Verified starting checkpoint for continuation | Which single component caused the gain; automatic localization performance |
 | Controlled SAM research screen | Control 47.75%, history 49.18%, boundary 47.51%, refiner 47.20% after 20 epochs | History prompt information was the only screened change above that screen's control | A completed 100-epoch improvement; the screen was short and not a final selection |
 | History continuation / ROI jitter | History continuation did not beat its source; jitter reached 49.38%, only about +0.20 percentage points over its matched control | Light ROI translation is safe to try, but its measured benefit was small | A reliable large improvement or evidence that augmentation alone will solve generalization |
 | Full-cohort loss comparison | Control best 49.47%; balanced-loss arm about 49.38%; final measured validation at epoch 30 was 42.74% vs 45.19% | Loss changes modestly affect training and validation behavior; later selected checkpoints can be worse than earlier best checkpoints | That a larger loss weight or sharper gradient will add 30–40 points |
 | Tiny loss fitting | About 86.7–87.4% on two training patients | The model/loss can fit a tiny training subset | Cohort validation quality, robust generalization, or an 80% result |
 | Physical ResUNet, zero clicks | Best validation 33.27% at epoch 120; frozen train 65.51%; fixed-0.5 validation 31.43%; early stopped at 180/300 | A zero-click random-initialized 3D model learns, but generalizes poorly under this experiment | A fair architecture-only comparison with SAM, which used pretrained weights and five oracle clicks |
+| 53-patient foundation continuation, reported 26 November | Validation 48.09%; selected train 53.25%; fixed-0.5 validation 47.43%; best additional epoch 5; early stopped at 55/100 | Fine-tuning with explicit exclusion of confirmed invalid train_28 input improves over the 45.63% source | Isolated effect of exclusion; training from a checkpoint free of previous train_28 exposure; an improvement over the 49.47% loss-control benchmark |
 | Larger-detail / multiclass runs | Incomplete or a different task/protocol; no confirmed FSDP validation win | These runs identify resource, label and task-design questions | That increasing a feature grid or token count will itself improve Dice |
 
 The displayed ResUNet cases show mixed failure modes at the selected threshold: `train_28` predicts zero voxels at threshold 0.95; `train_53` predicts 3,618 voxels for a 564-voxel target (about 6.4×); several others predict about 2.1–2.8× their target volume. The `train_28` score at threshold 0.95 does not show whether its probabilities are uniformly low; the probability map and threshold 0.5 are needed. `train_53` has an apparent false-positive burden, but the voxel totals alone do not identify its cause.
