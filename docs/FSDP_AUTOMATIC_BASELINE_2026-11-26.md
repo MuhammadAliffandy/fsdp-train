@@ -11,7 +11,7 @@ cd ~/raid/Clara/fsdp-train
 git fetch origin codex/exclude-mislabeled-train28
 git merge --ff-only origin/codex/exclude-mislabeled-train28
 conda activate fsdp-med3d
-GPU_ID=7 FSDP_SOURCE_ROOT="$HOME/raid/normal case_86" \
+GPU_ID=auto FSDP_SOURCE_ROOT="$HOME/raid/normal case_86" \
   FSDP_FOUNDATION_DIR="$HOME/raid/Clara/fsdp-train/runs/fsdp_private_sam_refine32_20261123T144159Z_3745292" \
   bash scripts/launch_fsdp_auto_nnunet_nohup.sh
 tail -f logs/fsdp_auto_nnunet/latest.log

@@ -10,7 +10,7 @@ mkdir -p "$LOG" "$PROJECT_DIR/runs"
 if [[ -f "$LOG/latest.pid" ]] && kill -0 "$(cat "$LOG/latest.pid")" 2>/dev/null; then
   echo 'An automatic nnU-Net job is already active.' >&2; exit 1
 fi
-GPU_CHECK=(python "$PROJECT_DIR/scripts/fsdp_research_gpu.py" --gpu-id "${GPU_ID:-7}" \
+GPU_CHECK=(python "$PROJECT_DIR/scripts/fsdp_research_gpu.py" --gpu-id "${GPU_ID:-auto}" \
   --output "$LOG/$NAME.gpu.json" --min-free-gib 48 --exclude "${EXCLUDE_GPU_IDS:-0}")
 SELECTED_UUID="$("${GPU_CHECK[@]}")"
 export CUDA_VISIBLE_DEVICES="$SELECTED_UUID"
