@@ -10,14 +10,25 @@ if [[ ! "$WAIT_SECONDS" =~ ^[0-9]+$ || ! "$MAX_WAIT_SECONDS" =~ ^[0-9]+$ ]] \
   exit 2
 fi
 STARTED_AT="$(date +%s)"
-echo "Waiting up to $MAX_WAIT_SECONDS seconds for an idle GPU with at least 48 GiB free." \
+SHARING="${AUTO_GPU_ALLOW_SHARING:-0}"
+if [[ "$SHARING" != 0 && "$SHARING" != 1 ]]; then
+  echo 'AUTO_GPU_ALLOW_SHARING must be 0 or 1.' >&2
+  exit 2
+fi
+GPU_ARGS=(--gpu-id "${GPU_ID:-auto}" --output "$GPU_RECORD" --min-free-gib 48
+  --exclude "${EXCLUDE_GPU_IDS:-0}")
+if [[ "$SHARING" == 1 ]]; then
+  GPU_ARGS+=(--allow-sharing --memory-budget-gib "${AUTO_GPU_MEMORY_BUDGET_GIB:-24}"
+    --reserve-gib 16)
+fi
+echo "Waiting up to $MAX_WAIT_SECONDS seconds for a GPU with at least 48 GiB free." \
   "Request=${GPU_ID:-auto}; excluded=${EXCLUDE_GPU_IDS:-0}." \
+  "Sharing=$SHARING; allocator budget=${AUTO_GPU_MEMORY_BUDGET_GIB:-24} GiB if shared." \
   'No other processes will be stopped.'
 while true; do
   STATUS=0
   SELECTED_UUID="$(python "$PROJECT_DIR/scripts/fsdp_research_gpu.py" \
-    --gpu-id "${GPU_ID:-auto}" --output "$GPU_RECORD" --min-free-gib 48 \
-    --exclude "${EXCLUDE_GPU_IDS:-0}" 2>"${GPU_RECORD}.stderr")" || STATUS=$?
+    "${GPU_ARGS[@]}" 2>"${GPU_RECORD}.stderr")" || STATUS=$?
   if (( STATUS == 0 )); then
     export CUDA_VISIBLE_DEVICES="$SELECTED_UUID"
     echo "GPU selected at $(date -u +%Y-%m-%dT%H:%M:%SZ): $SELECTED_UUID"

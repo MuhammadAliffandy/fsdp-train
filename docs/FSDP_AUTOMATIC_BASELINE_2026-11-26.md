@@ -21,4 +21,19 @@ Jika push branch belum berhasil, salin `outputs/private/fsdp_auto_nnunet_code.ta
 
 Launcher memeriksa paket lebih dulu, lalu berjalan lewat nohup. Bila belum ada GPU tanpa proses komputasi dengan setidaknya 48 GiB kosong, proses antrean memeriksa ulang setiap 120 detik sampai 24 jam tanpa menghentikan job lain. Antrean dapat dihentikan dengan PID pada `logs/fsdp_auto_nnunet/latest.pid`; pemeriksaan GPU hanya menjamin kondisi saat pemilihan, bukan reservasi sistem. Lokasi run tersimpan di `logs/fsdp_auto_nnunet/latest_run.txt`. Setelah kedua arm selesai, baca `comparison.json`, `predictions_2d/summary.json`, `predictions_3d_fullres/summary.json`, dan CSV per pasien. Prediksi NIfTI juga tersedia pada folder tiap arm untuk review anatomi.
 
+Jika antrean lama, pilihan eksplisit `AUTO_GPU_ALLOW_SHARING=1` menerima GPU yang sudah punya proses komputasi asalkan saat dipilih tersedia minimal 48 GiB. Pilihan ini menjalankan train dan predict melalui pembungkus yang mengatur batas *PyTorch caching allocator* 24 GiB per proses dan meminta 16 GiB cadangan pada pemeriksaan awal. Batas allocator bukan reservasi GPU atau batas bagi semua alokasi CUDA, sehingga job lain yang tumbuh dapat tetap menyebabkan OOM atau memperlambat training. Tidak ada proses lain yang dihentikan. Jangan jalankan dua launcher otomatis bersamaan; hentikan antrean lama setelah memastikan PID-nya masih menjalankan `wait_fsdp_auto_gpu.sh`, lalu jalankan ulang:
+
+```bash
+cd ~/raid/Clara/fsdp-train
+old_pid=$(cat logs/fsdp_auto_nnunet/latest.pid)
+ps -p "$old_pid" -o args= | grep -F 'wait_fsdp_auto_gpu.sh' || exit 1
+kill "$old_pid"
+sleep 2
+AUTO_GPU_ALLOW_SHARING=1 AUTO_GPU_MEMORY_BUDGET_GIB=24 GPU_ID=auto \
+  bash scripts/launch_fsdp_auto_nnunet_nohup.sh
+tail -f logs/fsdp_auto_nnunet/latest.log
+```
+
+Jika pemeriksaan PID tidak cocok, jangan kirim sinyal; baca log terbaru karena proses mungkin sudah masuk fase training. GPU yang dipilih dan PID aktif tercatat pada berkas `logs/fsdp_auto_nnunet/*.gpu.json`. Opsi tanpa sharing tetap menjadi default.
+
 Pilihan model berikutnya harus didasarkan pada Dice per pasien, precision/recall, serta kasus dengan target terlewat. Jika kedua arm gagal menemukan struktur kecil pada CT utuh, lanjutkan localizer kasar dengan crop prediksi, lalu segmenter detail. Evaluasi lokalizer harus menghitung target di luar crop sebagai false negative. Test tetap belum dibaca.
