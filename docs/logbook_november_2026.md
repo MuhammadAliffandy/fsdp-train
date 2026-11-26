@@ -217,3 +217,25 @@ Rancangan berikutnya memakai dua tahap yang perlu diimplementasikan dan diuji se
 Kebutuhan sebelum implementasi training berikutnya adalah artefak partial/full encoder (config, history, preflight, ekspor skor dan overlay), laporan intensitas D1, serta akses CT train/validation dan binary target cache terverifikasi pada DGX. Masalah normalisasi dan anotasi D1/D3 tetap ditinjau. Data sumber 53 train yang valid dan 10 validation tersedia menurut laporan sebelumnya, sedangkan target cache perlu diverifikasi mampu merepresentasikan seluruh target pada volume CT. Original labels/ColorTable belum tersedia untuk validasi semantik independen.
 
 Status saat keputusan dicatat: rancangan otomatis disusun, localizer dan evaluasi gabungan CT utuh belum dijalankan. Pemilihan backbone, jendela intensitas, resolusi localizer dan crop detail masih menunggu audit train. Protokol akhir ini menjadi acuan interpretasi target klien.
+
+## Pembaruan 26 November — pembacaan paket diagnosis lokal
+
+| Parameter | Deskripsi |
+|---|---|
+| **Tanggal & Waktu** | 26 November 2026, setelah pengguna mengunduh dan mengekstrak fsdp_diagnostic_bundle.tar.gz ke proyek. |
+| **Rencana Harian** | Menguji hipotesis D1/D2/D3 menggunakan history lengkap, skor per pasien/sisi, parameter aktif, probe gradien, metadata input dan overlay. |
+| **Aktivitas yang Dilakukan** | Membaca dua run 53 train/10 validation, menghitung ulang Dice dari TP/volume, memverifikasi pasangan sisi dan pasien, membandingkan resep serta kurva lengkap. Meninjau diagnosis 128 ROI/64 header dan delapan PNG. Pengguna menegaskan target adalah seluruh volume anatomi FSDP. Membuat analisis JSON/CSV dan grafik lokal. |
+| **Hasil/Capaian** | Full encoder akhir epoch 60 mencapai train **63,65%**, validasi **41,89%**. Partial akhir epoch 55 train **60,31%**, validasi **42,34%**. Seluruh 12 blok menerima gradien finite pada dua probe awal full. Median clipping detail **19,82% train/21,16% validation**, SAM context **15,21%/15,63%**. Perbandingan best meningkatkan 5 pasien dan menurunkan 5 pasien, dengan val_06 turun **14,18 poin**. |
+| **Kendala/Masalah** | Kurva mendukung overfitting pada kedua resep. Beberapa prediksi memiliki volume hampir benar tetapi overlap rendah, sehingga kalibrasi volume belum cukup. Overlay memperlihatkan bagian tipis yang terlewat atau posisi/bentuk yang tidak sesuai pada irisan yang dilihat. Kandidat normalisasi lama memakai 54 pasien dan batas bawah −1000 meskipun median raw target train_01 berada di bawah −1000. Bukti kesetaraan grid kandidat lama mencatat counter 0. Paket belum memuat CT, checkpoint, ataupun mask volumetrik. |
+| **Solusi/Tindak Lanjut** | Menentukan ulang kandidat normalisasi dari 53 train, memverifikasi seluruh grid/target/support, serta melengkapi error spasial native di DGX. Memprioritaskan pipeline otomatis localizer–segmenter sesuai kebutuhan klien. Model interaktif tetap menjadi benchmark diagnosis. Definisi volume pengguna menjadi acuan review anotasi. |
+| **Dokumentasi (Link/Ref)** | [Diagnosis paket DGX](FSDP_BUNDLE_DIAGNOSIS_2026-11-26.md). Artefak lokal di outputs/private/diagnostic_review_20261126/. |
+
+## Pembaruan 26 November — baseline otomatis dengan epoch sebanding
+
+| Parameter | Deskripsi |
+|---|---|
+| **Rencana** | Membandingkan segmentasi FSDP otomatis dari CT utuh pada 2D dan 3D dengan 100 epoch per arm. |
+| **Implementasi** | Menambahkan ekspor CT dan target full volume dari cache terverifikasi, pengecualian train_28, pemeriksaan hash/geometri/foreground, training nnU-Net 2D dan 3D berurutan, inferensi sepuluh CT validasi utuh, dan skor native per pasien. |
+| **Protokol** | Kedua arm memakai 53 train yang sama, 10 validation eksternal, epoch 100, normalisasi z-score per pasien, tanpa GT ROI maupun klik saat inferensi. Jumlah update optimizer dan komputasi antar arm belum dipasangkan. Test tidak dipakai. |
+| **Status** | Kode dan launcher disiapkan lokal. Eksekusi DGX, hasil Dice, kebutuhan VRAM/disk aktual, dan kapasitas target 80% belum diketahui. Paket diagnosis lokal tidak memuat CT maupun checkpoint untuk menjalankan workflow di laptop. |
+| **Dokumentasi** | [Panduan baseline otomatis](FSDP_AUTOMATIC_BASELINE_2026-11-26.md), [ekspor dan skor](../scripts/fsdp_auto_nnunet.py), [launcher](../scripts/launch_fsdp_auto_nnunet_nohup.sh). |
