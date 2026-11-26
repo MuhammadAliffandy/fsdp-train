@@ -49,6 +49,20 @@ def prepare(args):
     require_images(inventory)
     code_files = ('physical_resunet.py', 'train_physical_resunet.py', 'physical_fsdp.py', 'fsdp_verified_cache.py',
                   'train_private_tiny.py', 'train_private_long.py', 'evaluate_private_validation.py')
+    use25d = getattr(args, 'neighbor_slices', None) is not None
+    if use25d:
+        prepared['patients']['train'].pop('train_28')
+        prepared['samples']['train'] = [s for s in prepared['samples']['train'] if s['case'] != 'train_28']
+        for split in ('train', 'val'):
+            for sample in prepared['samples'][split]:
+                raw = np.asarray(sample['raw_native'], dtype=np.float32)
+                if not np.isfinite(raw).all() or raw.std() < 1e-6:
+                    raise ValueError('Invalid native CT ROI')
+                sample['image'] = torch.from_numpy((raw - raw.mean()) / raw.std())[None, None]
+                sample['target'] = torch.from_numpy(sample['native_target'].astype(np.uint8))[None, None]
+                sample['valid'] = torch.ones_like(sample['target'], dtype=torch.bool)
+                sample['grid'] = sample['native']
+        code_files = (*code_files, 'physical_unet25d.py', 'fsdp_research_metrics.py')
     config = {'experiment': 'physical_resunet_zero_clicks', 'architecture': ARCHITECTURE,
         'parameters': {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items() if k != 'resume'},
         'cache_sha256': old['cache_sha256'], 'manifest_sha256': old['manifest_sha256'], 'physical_policy': prepared['policy'],
@@ -63,6 +77,15 @@ def prepare(args):
         'patch_scoring': 'Train patches may truncate targets; validation always full unchanged ROI and full original target.',
         'comparison_note': 'New architecture/random initialization/loss/recipe and0clicks versus SAM5/side; benchmark, not one-variable ablation or full-scan automatic localization.',
         'cache_integrity': integrity, 'test_images_read': False}
+    if use25d:
+        config.update(experiment='native_unet25d_zero_clicks', architecture={
+            'channels': [16,32,64,128], 'neighbors': args.neighbor_slices, 'axis': 'native voxel Z; may be oblique',
+            'edge_policy': 'repeat boundary slices', 'initialization': 'random; no SAM weights',
+            'batch_slice_chunks': 8, 'deep_supervision': [1.,.3,.15]},
+            protocol='53train/10val; native GT ROI; zero clicks; native volume reconstruction; train-only threshold',
+            normalization='per native ROI zscore without foreground clipping; per-case unsupervised statistics',
+            slice_spacing_mm={s['name']: s['native']['spacing'][2] for split in ('train','val') for s in prepared['samples'][split]},
+            comparison_note='1vs5slice paired architecture experiment; different data/recipe/prompts from SAM; GTROI is not automatic localization')
     if args.resume:
         if data.read(args.run_dir / 'config.json') != config or (args.run_dir / 'summary.json').exists():
             raise ValueError('Resume requires unchanged unfinished baseline configuration')
@@ -102,7 +125,7 @@ def overlay(sample, prediction, dice, threshold, output):
                     ax.imshow(mask, cmap=ListedColormap([color]), alpha=.3, origin='lower', aspect=aspect)
             ax.set_title(f'Axis{axis}, slice{index}: ' + ('GT', 'prediction', 'GT+prediction')[col], fontsize=8)
             ax.axis('off')
-    fig.suptitle(f'{sample["name"]}; physical ResUNet; GT-assisted ROI;0clicks; t={threshold:g}; Dice={dice:.4f}')
+    fig.suptitle(f'{sample["name"]}; physical ROI; GT-assisted ROI;0clicks; t={threshold:g}; Dice={dice:.4f}')
     fig.tight_layout(); fig.savefig(output / f'{sample["name"]}.png', dpi=130); plt.close(fig)
 
 
@@ -142,11 +165,22 @@ def evaluate(model, prepared, split, device, thresholds, precision, export=None)
                     save_crop(export / f'{sample["name"]}_target.nii.gz', sample['native_target'].astype(np.uint8), sample['metadata'])
                     overlay(sample, prediction, score['dice_full_target'], threshold, export)
         for threshold, bundle in result.items():
-            bundle['patients'].append({'case': case, 'threshold': threshold, 'oracle_clicks': 0,
-                **sparse_scores(np.concatenate(parts[threshold]), patient['target_indices'])})
-        print(f'{split}: {case} ResUNet native inference complete', flush=True)
+            prediction = np.concatenate(parts[threshold])
+            record = {'case': case, 'threshold': threshold, 'oracle_clicks': 0,
+                **sparse_scores(prediction, patient['target_indices'])}
+            if hasattr(model, 'neighbor_slices') and split == 'val':
+                from fsdp_research_metrics import surface_metrics
+                record.update(surface_metrics(prediction, patient['target_indices'], patient['shape'], collection[0]['native']['spacing']))
+            bundle['patients'].append(record)
+        label = f'UNet25D[{model.neighbor_slices}]' if hasattr(model, 'neighbor_slices') else 'ResUNet'
+        print(f'{split}: {case} {label} native inference complete', flush=True)
     for threshold, bundle in result.items():
         bundle['metrics'] = metrics(bundle)
+        if hasattr(model, 'neighbor_slices') and split == 'val':
+            for key in ('surface_dice_0_5mm', 'surface_dice_1mm'):
+                bundle['metrics']['mean_' + key] = float(np.mean([p[key] for p in bundle['patients']]))
+            hd = [p['hd95_mm'] for p in bundle['patients'] if p['hd95_mm'] is not None]
+            bundle['metrics']['median_hd95_mm'] = float(np.median(hd)) if hd else None
         if export:
             write_csv(export / f'{split}_t{threshold:g}_patients.csv', bundle['patients'])
             write_csv(export / f'{split}_t{threshold:g}_sides.csv', bundle['sides'])
@@ -177,7 +211,8 @@ def train_epoch(model, samples, optimizer, scaler, device, precision, epoch, arg
             success = scaler.get_scale() >= old_scale
             updates += int(success); skips += int(not success)
             optimizer.zero_grad(set_to_none=True)
-        print(f'ResUNet epoch={epoch + 1}/{args.epochs} roi={step + 1}/{len(samples)} loss={loss.item():.5f} updates={updates}', flush=True)
+        label = f'UNet25D[{model.neighbor_slices}]' if hasattr(model, 'neighbor_slices') else 'ResUNet'
+        print(f'{label} epoch={epoch + 1}/{args.epochs} roi={step + 1}/{len(samples)} loss={loss.item():.5f} updates={updates}', flush=True)
     return {'loss': float(np.mean(losses)), 'optimizer_updates': updates, 'amp_skipped_updates': skips,
             'view_counts': counts, 'gradient_norm_mean': float(np.mean(norms))}
 
@@ -198,7 +233,11 @@ def fit(args, prepared, config):
     precision = torch.bfloat16 if args.precision == 'bf16' else torch.float16
     if device.type == 'cuda':
         torch.cuda.manual_seed_all(args.seed)
-    model = PhysicalResUNet().to(device)
+    if getattr(args, 'neighbor_slices', None) is not None:
+        from physical_unet25d import PhysicalUNet25D
+        model = PhysicalUNet25D(args.neighbor_slices).to(device)
+    else:
+        model = PhysicalResUNet().to(device)
     initial_hash = state_hash(model.state_dict())
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     def schedule(epoch):
@@ -253,6 +292,8 @@ def fit(args, prepared, config):
             val = evaluate(model, prepared, 'val', device, sorted(set((candidate, .5))), precision)
             score = val[candidate]['metrics']['mean_bilateral_patient_dice']
             row.update(train_dice=train[candidate]['metrics']['mean_bilateral_patient_dice'], val_dice=score, threshold=candidate)
+            if hasattr(model, 'neighbor_slices'):
+                row.update({key: value for key, value in val[candidate]['metrics'].items() if 'surface' in key or 'hd95' in key})
             early, stopped = early_stop_update(early, score, epoch + 1, args.patience, .001)
             improved = score > best
             if improved:
@@ -309,7 +350,7 @@ def plot(history, training, validation, output):
     for bundle, label in ((training, 'Train'), (validation, 'Validation')):
         axes[2].scatter(range(len(bundle['patients'])), [p['dice_full_target'] for p in bundle['patients']], label=label, s=15)
     axes[2].set(xlabel='Patient index within split', ylabel='Selected checkpoint Dice', ylim=(0, 1)); axes[2].legend()
-    fig.suptitle('Physical ResUNet; GT-assisted ROI;0oracle clicks')
+    fig.suptitle('Physical ROI segmentation; GT-assisted ROI;0oracle clicks')
     fig.tight_layout(); fig.savefig(output / 'training_and_patient_dice.png', dpi=140); plt.close(fig)
 
 
@@ -317,6 +358,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('foundation-run-dir', 'sam-comparison-dir', 'run-dir'):
         parser.add_argument('--' + name, type=Path, required=True)
+    parser.add_argument('--neighbor-slices', type=int, choices=(1, 5), help='Enable native 2.5D (5) or matched slice control (1)')
     parser.add_argument('--source-root', type=Path)
     parser.add_argument('--epochs', type=int, default=300)
     parser.add_argument('--patience', type=int, default=60)

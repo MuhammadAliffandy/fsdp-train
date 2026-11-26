@@ -249,3 +249,9 @@ Disiapkan kelanjutan SAM CNN32/Turbo8 history dari loss-control terbaik, dengan 
 Perbaikan startup augmentasi: pemeriksaan checkpoint lama menolak hash trainer yang berubah sejak eksperimen sumber. Ditambahkan kompatibilitas terbatas untuk dua revisi trainer yang ditinjau, dengan hash versi saat ini juga dikunci; file model/data/metric lainnya tetap harus sama. Tiga pengujian isolasi pemeriksaan hash lulus. Suite continuation penuh belum bisa dijalankan pada interpreter lokal karena MONAI tidak tersedia. Reproduksi checkpoint/data tetap merupakan pemeriksaan DGX sebelum update pertama.
 
 Hasil augmentasi yang dilaporkan: control49,592%, affine49,983%, kenaikan+0,391poin terhadap control; affine berhenti35epoch, bestepoch1. Belum menunjukkan peningkatan besar. Disiapkan `audit_fsdp_sam_results.py` untuk membandingkan FP/FN, rasio volume, metrik permukaan dan skor per pasien/sisi dari ekspor yang sudah selesai. Dua tes CPU dengan fixture sintetis lulus; hasil audit pasien sebenarnya masih perlu diambil dari DGX. Surface Dice1mm88,11% tidak disamakan dengan volume Dice80% atau diagnosis penyebab.
+
+## 26 November 2026 — pencatatan dua Dice dan percobaan 2,5D
+
+SAM affine mencatat volume Dice **49,983%**, surface Dice @0,5 mm **78,568%**, surface Dice @1 mm **88,110%**, dan median HD95 **2,414 mm**. Control mencatat volume Dice **49,592%**. Surface Dice tidak disamakan dengan target volume Dice 80%.
+
+Ditambahkan percobaan satu versus lima slice pada ROI raw_native: 53 pasien training, 10 validasi, nol klik, bobot 2D baru, maksimal 100 epoch per arm, patience 30. Setiap evaluasi validasi mencatat volume Dice, surface Dice @0,5/1 mm dan HD95. Tiga tes model CPU lulus; training DGX belum dijalankan dari sesi ini. Ini studi konteks slice, dengan GT ROI. Rincian: FSDP_25D_2026-11-26.md.
