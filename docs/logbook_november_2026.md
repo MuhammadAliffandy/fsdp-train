@@ -142,3 +142,33 @@ Target klien sekitar 80% Dice dicatat sebagai sasaran. Bukti terbaru berada pada
 ## Cara menambah catatan harian
 
 Tambahkan entri tanggal baru dengan tujuh baris tabel yang sama. Nyatakan status aktivitas secara konkret, misalnya dirancang, diimplementasikan, dijalankan di DGX, terhenti, atau selesai. Isi Hasil/Capaian dari artefak run yang tersedia dan hubungkan keputusan dengan hasil tersebut. Tambahkan hasil D1/D2/D3 pada tanggal penerimaan hasil agar hipotesis awal dan hasil diagnosis dapat ditelusuri.
+
+## Pembaruan 26 November — implementasi adaptasi seluruh image encoder
+
+Pengguna memprioritaskan penyesuaian representasi pretrained Turbo terhadap dataset FSDP. Opsi `--full-image-encoder` pada trainer foundation membuka seluruh image encoder, termasuk patch embedding, positional embedding, semua blok transformer, dan neck. Mask decoder serta CNN refiner ikut dilatih, dengan prompt encoder beku. Launcher meneruskan opsi melalui `FSDP_FULL_IMAGE_ENCODER=1`.
+
+Pembandingan dimulai dari foundation asli 45,63% yang juga menjadi sumber continuation 53 pasien. Kebijakan input, token8/CNN32, loss, klik, seed, dan jadwal mengikuti kontrol continuation tersebut. LR dasar SAM mengikuti multiplier 0,2 dari resep sumber, umumnya 2e-6, dan LR CNN 2e-5, dengan warmup/cosine yang sudah ada. Ini merupakan percobaan D2 terhadap kontrol dengan input sama. Saturasi input D1 masih memerlukan diagnosis dan pembentukan kandidat 53 pasien.
+
+Run full encoder mencatat `encoder_trainability.json` untuk jumlah parameter aktif per kelompok. Dua update pertama pada epoch awal continuation mencatat gradien patch embedding, blok encoder, neck, serta kelompok SAM/CNN. Tahap di history bernama `full_image_encoder_and_refiner`. Pengecualian train_28 tetap diberikan secara eksplisit.
+
+Pemeriksaan lokal memakai fungsi produksi set_stage dan gradient_groups pada jaringan PyTorch kecil. Mode partial dan full lulus pemeriksaan parameter aktif, train/eval, backward finite, serta update AdamW pada parameter yang seharusnya dilatih. Pemeriksaan juga memastikan prompt tetap beku, positional embedding menerima gradien pada mode full, semua 12 blok mempunyai gradien, dan pengecualian alias bekerja. Sintaks Python/shell dan whitespace diperiksa. Eksekusi model Turbo penuh, kebutuhan VRAM H100, reproduksi checkpoint pada CT asli, dan perubahan Dice belum diukur. Lingkungan lokal belum memiliki MONAI sehingga pemeriksaan lokal ini terbatas pada fungsi training terkait.
+
+Command DGX berikut memakai worktree yang sudah dibuat sebelumnya. GPU_ID harus menunjuk GPU yang tersedia saat dijalankan.
+
+```bash
+cd ~/raid/Clara/fsdp-train-train28fix
+git fetch origin codex/exclude-mislabeled-train28
+git merge --ff-only origin/codex/exclude-mislabeled-train28
+conda activate fsdp-med3d
+
+GPU_ID=7 \
+FSDP_FOUNDATION_DIR="/raid/D13K48009/Clara/fsdp-train/runs/fsdp_private_sam_refine32_20261123T144159Z_3745292" \
+FSDP_SOURCE_ROOT="$HOME/raid/normal case_86" \
+FSDP_VERIFIED_CACHE=1 \
+FSDP_EXCLUDE_TRAIN_ALIASES=train_28 \
+FSDP_FULL_IMAGE_ENCODER=1 \
+ADDITIONAL_EPOCHS=100 \
+bash scripts/launch_fsdp_foundation_nohup.sh
+
+tail -n 80 -f logs/fsdp_foundation/latest.log
+```

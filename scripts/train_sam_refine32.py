@@ -245,19 +245,37 @@ def gradient_groups(model):
         nonfinite = sum(int((~value.isfinite()).sum().item()) for value in values)
         result[name] = {'nonfinite_elements': nonfinite,
                         'l2_norm': sum(v.square().sum().item() for v in values) ** .5 if not nonfinite else None}
+    if getattr(model, 'full_image_encoder', False):
+        for name, module in model.sam.image_encoder.named_children():
+            modules = [(f'blocks.{index}', block) for index, block in enumerate(module)] if name == 'blocks' else [(name, module)]
+            for label, layer in modules:
+                values = [p.grad.detach().float() for p in layer.parameters() if p.grad is not None]
+                nonfinite = sum(int((~value.isfinite()).sum().item()) for value in values)
+                result[f'image_encoder.{label}'] = {
+                    'parameters_with_gradient': sum(p.grad is not None for p in layer.parameters()),
+                    'nonfinite_elements': nonfinite,
+                    'l2_norm': sum(value.square().sum().item() for value in values) ** .5 if not nonfinite else None}
     return result
 
 
 def set_stage(model, epoch, warmup):
     model.train()
     active = epoch >= warmup
+    full_encoder = getattr(model, 'full_image_encoder', False)
+    prefixes = ('image_encoder.', 'mask_decoder.') if full_encoder else (
+        'image_encoder.blocks.10.', 'image_encoder.blocks.11.', 'mask_decoder.')
     for name, parameter in model.sam.named_parameters():
-        parameter.requires_grad_(active and name.startswith(('image_encoder.blocks.10.', 'image_encoder.blocks.11.', 'mask_decoder.')))
+        parameter.requires_grad_(active and name.startswith(prefixes))
     model.sam.eval()
     if active:
-        model.sam.image_encoder.blocks[10].train()
-        model.sam.image_encoder.blocks[11].train()
+        if full_encoder:
+            model.sam.image_encoder.train()
+        else:
+            model.sam.image_encoder.blocks[10].train()
+            model.sam.image_encoder.blocks[11].train()
         model.sam.mask_decoder.train()
+    if active and full_encoder:
+        return 'full_image_encoder_and_refiner'
     return 'partial_turbo_and_refiner' if active else 'refiner_warmup'
 
 
@@ -280,7 +298,7 @@ def train_epoch(model, prepared, optimizer, scaler, criterion, device, epoch, ar
         total.append(loss.item())
         if should_step:
             scaler.unscale_(optimizer)
-            if epoch == 0 and updates + skipped < 2:
+            if (epoch == 0 or getattr(model, 'record_gradient_probes', False)) and updates + skipped < 2:
                 probes.append(gradient_groups(model))
             norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.)
             if not torch.isfinite(norm) and not scaler.is_enabled():
@@ -323,6 +341,18 @@ def execute(args):
     if resolution:
         from fsdp_resolution import setup
         model, prepared = setup(model, prepared, args, config)
+    model.full_image_encoder = config.get('encoder_adaptation', {}).get('mode') == 'full_image_encoder'
+    if model.full_image_encoder:
+        set_stage(model, 0, args.head_warmup_epochs)
+        trainability = {name: {'total': sum(p.numel() for p in module.parameters()),
+                              'trainable': sum(p.numel() for p in module.parameters() if p.requires_grad)}
+                        for name, module in model.named_children()}
+        data.save(args.run_dir / 'encoder_trainability.json', {
+            'mode': 'full_image_encoder', 'groups': trainability,
+            'sam_groups': {name: {'total': sum(p.numel() for p in module.parameters()),
+                                 'trainable': sum(p.numel() for p in module.parameters() if p.requires_grad)}
+                           for name, module in model.sam.named_children()},
+            'sam_lr': args.sam_lr, 'head_lr': args.head_lr})
     initial_hash = state_hash(model.state_dict())
     sam_parameters = list(model.sam.parameters())
     new_parameters = [p for name, p in model.named_parameters() if not name.startswith('sam.')]
@@ -406,6 +436,7 @@ def execute(args):
     for epoch in range(start, args.epochs) if not stopped else []:
         lrs = [g['lr'] for g in optimizer.param_groups]
         sample_epoch = epoch + (foundation['source_best_epoch'] if foundation else 0)
+        model.record_gradient_probes = model.full_image_encoder and epoch == start
         measured = train_epoch(model, prepared, optimizer, scaler, criterion, device, sample_epoch, args)
         if measured['optimizer_updates'] + measured['amp_skipped_updates'] != measured['expected_updates']:
             raise ValueError('Incomplete optimizer accumulation')
@@ -490,6 +521,9 @@ def execute(args):
             optimizer_protocol='fresh optimizer and lower-LR schedule; inherited best model weights; additional epoch0 is unchanged foundation')
     if config.get('target_recovery'):
         summary['target_recovery'] = config['target_recovery']
+    if config.get('encoder_adaptation'):
+        summary['encoder_adaptation'] = config['encoder_adaptation']
+        summary['training_stages']['then'] = 'all image_encoder parameters and mask_decoder plus CNN refiner'
     if resolution:
         from fsdp_resolution import update_summary
         update_summary(summary, model, config, prepared)

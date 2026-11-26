@@ -143,6 +143,17 @@ def prepare_foundation(args):
             'reason': {'train_28': 'source image contains a 0-14 integer label map, not CT intensities'},
             'cache_and_frozen_manifest_modified': False,
             'foundation_checkpoint_exposure': 'Inherited weights were trained with this input; exclusion applies to continuation only.'}
+    if getattr(args, 'full_image_encoder', False):
+        if getattr(args, 'resolution_variant', None):
+            raise ValueError('Full encoder adaptation requires the original CNN32/Turbo8 architecture')
+        config['encoder_adaptation'] = {
+            'mode': 'full_image_encoder',
+            'trainable': 'all image_encoder parameters, mask_decoder, and CNN refiner',
+            'prompt_encoder': 'frozen',
+            'sam_learning_rate': args.sam_lr, 'cnn_learning_rate': args.head_lr,
+            'comparison': f'{len(trainer.active_train_aliases(prepared))}-patient partial-encoder continuation from the same original foundation',
+            'input_policy': 'existing verified physical cache; normalization diagnosis remains pending'}
+        config['foundation']['change'] = 'inherit full best hybrid weights; train all image encoder parameters plus mask decoder and CNN'
     if getattr(args, 'resolution_variant', None):
         from fsdp_resolution import configuration
         config['resolution'] = configuration(args, old)
@@ -229,6 +240,8 @@ def main():
     parser.add_argument('--audit-only', action='store_true')
     parser.add_argument('--exclude-train-alias', action='append', default=[],
                         help='Explicitly omit a diagnosed training alias; cache and manifest remain unchanged')
+    parser.add_argument('--full-image-encoder', action='store_true', default=argparse.SUPPRESS,
+                        help='Adapt every image encoder parameter plus mask decoder and CNN to FSDP')
     args = parser.parse_args()
     args.foundation_run_dir = args.foundation_run_dir.expanduser().resolve()
     if args.source_root:

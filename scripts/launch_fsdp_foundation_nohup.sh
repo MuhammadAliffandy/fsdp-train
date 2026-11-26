@@ -14,6 +14,11 @@ done
 COMMAND=(python -u "$PROJECT_DIR/scripts/train_fsdp_foundation.py"
   --foundation-run-dir "$BASE" --run-dir "$RUN" --epochs "${ADDITIONAL_EPOCHS:-100}"
   --lr-multiplier "${LR_MULTIPLIER:-0.2}" --patience-epochs "${PATIENCE_EPOCHS:-50}" --device cuda:0)
+case "${FSDP_FULL_IMAGE_ENCODER:-0}" in
+  0) ;;
+  1) COMMAND+=(--full-image-encoder) ;;
+  *) echo "FSDP_FULL_IMAGE_ENCODER must be 0 or 1." >&2; exit 2 ;;
+esac
 if [[ -n "${FSDP_EXCLUDE_TRAIN_ALIASES:-}" ]]; then
   IFS=',' read -r -a EXCLUDED_ALIASES <<< "$FSDP_EXCLUDE_TRAIN_ALIASES"
   for ALIAS in "${EXCLUDED_ALIASES[@]}"; do
