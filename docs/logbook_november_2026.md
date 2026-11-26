@@ -172,3 +172,26 @@ bash scripts/launch_fsdp_foundation_nohup.sh
 
 tail -n 80 -f logs/fsdp_foundation/latest.log
 ```
+
+## Pembaruan 26 November — hasil adaptasi seluruh image encoder
+
+| Parameter | Deskripsi |
+|---|---|
+| **Tanggal & Waktu** | 26 November 2026. Nama run mencatat mulai 03.22 UTC, setara 10.22 WIB. Waktu selesai belum dicatat pada laporan yang diberikan. |
+| **Rencana Harian** | Menguji apakah pembukaan seluruh image encoder meningkatkan pembelajaran dan validasi pada cohort FSDP 53 pasien. |
+| **Aktivitas yang Dilakukan** | Pengguna menjalankan full_image_encoder dengan train_28 dikecualikan, warm start foundation asli 45,63%, normalisasi lama, LR SAM 2e-6, dan LR CNN 2e-5. Seluruh image encoder, mask decoder dan CNN dilatih dengan prompt encoder beku. |
+| **Hasil/Capaian** | Run complete=true, early stopping pada **60/100 epoch tambahan**, best epoch tambahan **25**, threshold train-only **0,5**. Dice train@5 **57,98%**, validasi@5 **46,45%**, validasi@1 **38,68%**. Precision validasi **47,30%**, recall **47,28%**, minimum bilateral patient Dice **32,44%**, minimum side Dice **27,25%**. Selisih train–validation checkpoint terbaik **11,53 poin persentase**. |
+| **Kendala/Masalah** | Terhadap kontrol partial encoder 53 pasien, Dice train checkpoint terbaik naik **4,73 poin**, sedangkan validasi turun **1,64 poin**. Pada threshold tetap 0,5, validasi turun **0,98 poin**. Dua checkpoint dipilih pada epoch berbeda. Hasil satu seed ini mendukung kecenderungan peningkatan fitting train dengan generalisasi lebih lemah pada resep yang diuji. Kurva train/validation lengkap dan perubahan tiap pasien masih perlu diperiksa sebelum menetapkan pola sepanjang training. |
+| **Solusi/Tindak Lanjut** | Hipotesis bahwa membuka encoder saja cukup untuk meningkatkan Dice validasi belum didukung. Prioritaskan audit input D1 dan review spasial D3. Pertahankan kontrol partial encoder dalam pembandingan kandidat normalisasi 53 pasien. Catat penetapan checkpoint, LR, gradien awal, clipping, dan prediksi per pasien untuk menentukan percobaan berikutnya. |
+| **Dokumentasi (Link/Ref)** | DGX `fsdp_private_foundation_20261126T032200Z_3059519/summary.json`. Checkpoint SHA256 `9a8515abeb3ad828b87e463611beb43093bafd84c717f9bdaed8d563a836727d`. Artefak pada `/raid/D13K48009/Clara/fsdp-train-train28fix/runs/fsdp_private_foundation_20261126T032200Z_3059519`. |
+
+| Ukuran pada checkpoint terpilih | Partial encoder, 53 train | Full image encoder, 53 train | Selisih full − partial |
+|---|---|---|---|
+| Train Dice@5 | 53,25% | 57,98% | +4,73 poin |
+| Validation Dice@5, threshold train-only | 48,09% | 46,45% | −1,64 poin |
+| Validation Dice@5, threshold tetap 0,5 | 47,43% | 46,45% | −0,98 poin |
+| Validation Dice@1 | 39,16% | 38,68% | −0,48 poin |
+| Selisih train–validation@5 | 5,16 poin | 11,53 poin | +6,37 poin |
+| Best epoch tambahan | 5 | 25 | Checkpoint berbeda |
+
+Normalisasi pada laporan full encoder tetap clip −1343 hingga 136,84 dengan mean/std sumber 54 pasien. Dampak saturation D1 dan variasi batas D3 terhadap hasil belum diisolasi oleh percobaan ini. Coarse SAM pada trace klik hybrid mencapai 25,37% validasi@5, tetapi nilai ini memakai interaksi yang diarahkan keluaran hybrid dan belum merupakan pembandingan SAM mandiri. Bukti gradien/parameter aktif DGX belum disertakan dalam summary yang diberikan. Target 80% belum dapat dijanjikan berdasarkan hasil ini.
