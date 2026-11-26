@@ -17,3 +17,7 @@ tail -f logs/fsdp_sam_augmentation/latest.log
 ```
 
 Default sumber: `runs/fsdp_loss_cohort_20261125T070213Z_3564637/control`. Jika dipindah, set `FSDP_AUG_SOURCE_DIR` ke direktori checkpoint yang sama. Trainer memeriksa hash, kecocokan implementasi, dan reproduksi Dice sumber sebelum update. Ringkasan akhir berada di `comparison.json` pada run yang tercatat dalam `logs/fsdp_sam_augmentation/latest_run.txt`. GPU terpilih memerlukan48GiBkosong; batas allocator PyTorch24GiB bukan reservasi GPU. Proses lain tidak dihentikan. Kode lokal belum dapat membuktikan peningkatan Dice karena checkpoint dan CT lengkap ada di DGX.
+
+## Kompatibilitas checkpoint sumber
+
+Pemeriksaan sumber mengenali dua revisi `train_sam_refine32.py` yang telah ditinjau (050cf6f dan14e6ecc) terhadap hash versi sekarang. Perubahan mencakup laporan serta hook opsional eksklusi dan full encoder; jalur default memakai partial encoder dan tidak mengecualikan pasien saat reproduksi sumber. Pengecualian hash hanya berlaku untuk pasangan hash sumber/versi sekarang yang dicatat dalam kode. Seluruh file model/data/metric lainnya harus identik. Rekaman kompatibilitas disimpan dalam config run baru, lalu hash checkpoint, strict state load dan reproduksi Dice train/val1/5klik serta fixed0,5tetap diperiksa sebelum update. Perubahan yang belum dikenal menghasilkan pesan dengan nama file dan kedua hash; tidak ada opsi melewati seluruh pemeriksaan.

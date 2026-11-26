@@ -36,6 +36,34 @@ def code_signature():
     return {name: file_hash(Path(__file__).with_name(name)) for name in (*base.CODE_FILES, *EXTRA_FILES)}
 
 
+# Audited revisions: source variants differ in reporting and optional continuation hooks.
+# Default partial-encoder inference is still required to reproduce source metrics below.
+LEGACY_BASE_TRAINERS = {
+    '758a9e8b719718e37643a5f77f5de089e3d54971603aaa88bf9357b4a9370066': '050cf6f',
+    '5b4f3ed6031d290abb97da3bb3341a5c170cab373ab40a0abd1debba72d0bc7b': '14e6ecc',
+}
+COMPATIBLE_BASE_TRAINER = '1cacd8bfa38f08d103ede9ac736f85300caad1707fc68685b9fb333ff4cf2090'
+
+
+def inspect_source_code(hashes):
+    computational = tuple(dict.fromkeys((*base.CODE_FILES, 'fsdp_research_model.py', 'fsdp_research_metrics.py')))
+    compatible, mismatches = [], []
+    for name in computational:
+        actual, expected = file_hash(Path(__file__).with_name(name)), hashes.get(name)
+        if actual == expected:
+            continue
+        if (name == 'train_sam_refine32.py' and actual == COMPATIBLE_BASE_TRAINER
+                and expected in LEGACY_BASE_TRAINERS):
+            compatible.append({'file': name, 'source_sha256': expected, 'current_sha256': actual,
+                               'audited_source_revision': LEGACY_BASE_TRAINERS[expected],
+                               'require_source_metric_reproduction': True})
+        else:
+            mismatches.append(f'{name}: source={expected}, current={actual}')
+    if mismatches:
+        raise ValueError('Source history model/data/metric implementation changed: ' + '; '.join(mismatches))
+    return compatible
+
+
 def inspect_research_source(folder, control):
     folder = folder.resolve()
     config, summary = [data.read(folder / name) for name in ('config.json', 'summary.json')]
@@ -50,9 +78,7 @@ def inspect_research_source(folder, control):
             or config['manifest_sha256'] != control['manifest_sha256']
             or config['physical_policy'] != control['physical_policy']):
         raise ValueError('Expected a completed history arm from the same frozen foundation/cache/protocol')
-    computational = tuple(dict.fromkeys((*base.CODE_FILES, 'fsdp_research_model.py', 'fsdp_research_metrics.py')))
-    if any(file_hash(Path(__file__).with_name(name)) != config['code_sha256'][name] for name in computational):
-        raise ValueError('Source history model/data/metric implementation changed')
+    compatibility = inspect_source_code(config['code_sha256'])
     expected_versions = {**control['versions'], 'scipy': importlib.metadata.version('scipy')}
     if config['versions'] != expected_versions:
         raise ValueError('Source history package versions changed')
@@ -68,8 +94,11 @@ def inspect_research_source(folder, control):
     if (not math.isfinite(threshold) or not 0 < threshold < 1 or not math.isfinite(score)
             or not 0 <= score <= 1 or not 0 <= summary['best_epoch'] <= summary['completed_epochs']):
         raise ValueError('Source history selection metadata is invalid')
+    if compatibility:
+        print('Audited source trainer compatibility: ' + json.dumps(compatibility), flush=True)
     origin = config.get('research_source', {}).get('source_plus_additional_epoch', config['foundation']['source_best_epoch'])
-    return {'directory': str(folder), 'checkpoint_sha256': summary['best_checkpoint_sha256'],
+    return {**({'code_compatibility': compatibility} if compatibility else {}),
+            'directory': str(folder), 'checkpoint_sha256': summary['best_checkpoint_sha256'],
             'config_sha256': file_hash(folder / 'config.json'), 'summary_sha256': file_hash(folder / 'summary.json'),
             'best_epoch': summary['best_epoch'], 'source_plus_additional_epoch': origin + summary['best_epoch'],
             'threshold': threshold, 'expected_train': summary['best_frozen_training_metrics'],
