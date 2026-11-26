@@ -8,13 +8,16 @@ Persyaratan satu kali pada environment DGX: `python -m pip install nnunetv2` jik
 
 ```bash
 cd ~/raid/Clara/fsdp-train
-git pull --ff-only
+git fetch origin codex/exclude-mislabeled-train28
+git merge --ff-only origin/codex/exclude-mislabeled-train28
 conda activate fsdp-med3d
 GPU_ID=7 FSDP_SOURCE_ROOT="$HOME/raid/normal case_86" \
   FSDP_FOUNDATION_DIR="$HOME/raid/Clara/fsdp-train/runs/fsdp_private_sam_refine32_20261123T144159Z_3745292" \
   bash scripts/launch_fsdp_auto_nnunet_nohup.sh
 tail -f logs/fsdp_auto_nnunet/latest.log
 ```
+
+Jika push branch belum berhasil, salin `outputs/private/fsdp_auto_nnunet_code.tar.gz` dari Mac ke direktori proyek DGX melalui `scp`, lalu ekstrak dengan `tar -xzf fsdp_auto_nnunet_code.tar.gz` sebelum menjalankan launcher. Arsip ini hanya berisi kode dan panduan, bukan CT, label, atau checkpoint.
 
 Launcher memeriksa ketersediaan GPU, paket, dan sumber, lalu berjalan lewat nohup. Lokasi run tersimpan di `logs/fsdp_auto_nnunet/latest_run.txt`. Setelah kedua arm selesai, baca `comparison.json`, `predictions_2d/summary.json`, `predictions_3d_fullres/summary.json`, dan CSV per pasien. Prediksi NIfTI juga tersedia pada folder tiap arm untuk review anatomi.
 
