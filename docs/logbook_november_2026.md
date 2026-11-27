@@ -301,3 +301,63 @@ Keputusan: pertahankan hasil ini sebagai eksperimen negatif; jangan menaikkan ka
 Atas persetujuan pengguna, disiapkan pipeline15kelas selain RFSDP1/LFSDP9. Berbeda dari percobaan multiclass lama, model memuat encoder, prompt encoder, mask decoder dan CNN refiner dari checkpoint SAM affine49,983%volumeDice/88,110%surfaceDice1mm. Model biner bersama bergantian memproses struktur berdasarkan ROI/titik petunjuk, lalu hasil disusun menjadi peta label native eksklusif. Sasaran utama studi: surface Dice1mm80%; volume Dice tetap dilaporkan terpisah.
 
 Audit CPU mencari cache full17kelas lama dengan manifest dan hash yang sama, memeriksa mapping/jumlah target, dan berhenti sebelum GPU bila label penuh tidak tersedia. Pengecualian train_28 menghasilkan53train/10val. Class-specific physical grids dan normalisasi dipasang dari training saja, dengan roundtrip0,95sebagai gate. Evaluasi menggunakan5oraclepoints per struktur yang beranotasi, maksimum75perpasien; tidak mendeteksi kelas absen dan tidak diklaim otomatisCTutuh. Enam tes CPU lulus: data/audit, ekspor native eksklusif dari logits sintetis, dan penghentian launcher saat seleksi GPU gagal. Sintaks Python/shell lulus. Ada peringatan NumPy matmul dari helper fisik lama pada lingkungan lokal, dengan pemeriksaan keutuhan target/geometri dan finite tensor tetap lulus. Training DGX belum dijalankan; ketersediaan cache lengkap dan skor baru belum dapat dipastikan. Panduan: SAM_OTHER_PARTS_2026-11-27.md.
+
+### 27 November 2026 — SAM non-FSDP validation exceeds the 80% target
+
+**Milestone:** the DGX completion report records **85.7441% patient-macro Volume Dice**, **97.3086% Surface Dice at 1 mm**, and **93.4820% Surface Dice at 0.5 mm** for the annotated non-FSDP structures. Both the average Volume Dice and Surface Dice at 1 mm exceed 80% under the assisted evaluation protocol. Training completed all **20/20 epochs**; the best checkpoint was selected at **epoch 20**. These results update the earlier implementation-only status above.
+
+**Team reading note:** “non-FSDP” means that **RFSDP (class 1) and LFSDP (class 9) are excluded**. The reported 85.74% Volume Dice and 97.31% Surface Dice at 1 mm describe the other annotated structures. They are not new FSDP segmentation scores. Evaluation uses a GT-derived ROI and five corrective oracle points per annotated structure.
+
+The preceding launcher report identified run `sam_other_parts_20261127T084702Z_384068` on physical GPU 3, with a 24 GiB allocator cap. The full-label cache audit passed for 53 training and 10 validation patients after excluding train_28. There were 441 annotated training patient–structure views per epoch and 111 optimizer updates per epoch. The workflow inherited the complete learned SAM-Med3D Turbo/history/CNN32 hybrid weights; it did not initialize a new random 2D backbone. Model/data preparation and evaluation implementation: commit `fa2f883`.
+
+Validation covers **91 annotated patient–structure pairs**, representing **14 evaluable classes** among the 15 requested non-FSDP classes. LSOEC has zero annotated validation examples and therefore receives no score. Every evaluated class has a mean Surface Dice at 1 mm above 80%; this does not imply that every individual patient–structure prediction exceeds 80%.
+
+```text
+VALIDATION REPORT — SAM-Med3D + CNN Refiner
+Non-FSDP structures | All scores in percent
+
+Training: 53 patients | Validation: 10 patients
+Completed: 20 epochs | Best checkpoint: epoch 20
+
+Structure Precision  Recall   Dice   SD@1mm   N
+------------------------------------------------
+RANC          87.80   81.44   84.30    98.52  10
+RSAC          90.93   81.06   84.89    99.55   6
+RSAFC         91.13   80.13   84.34    97.94   3
+RBE           92.06   87.58   89.58    98.07  10
+RSBC          84.00   89.98   86.29    96.01   7
+RSBFC         90.18   69.31   74.29    83.71   3
+RSOEC         90.75   83.65   86.37    99.39   2
+LANC          84.56   89.60   86.72    99.06  10
+LSAC          93.49   81.85   87.00    99.59   7
+LSAFC         93.27   77.35   84.41    94.55   3
+LBE           91.78   81.93   86.44    96.73  10
+LSBC          89.22   84.54   86.37    97.44   9
+LSBFC         87.12   91.22   88.87    98.95   7
+LSOEC             —       —       —        —   0
+FSC           83.87   83.55   83.18    96.86   4
+------------------------------------------------
+Patient-macro 88.82   84.10   85.74    97.31  10
+
+Surface Dice @0.5mm: 93.48%
+N = annotated validation patients per structure.
+14 evaluated classes; 91 patient–structure pairs.
+
+Protocol: GT-derived ROI + 5 oracle points/class.
+FSDP excluded. Not automatic full-CT evaluation.
+Test images not used.
+```
+
+**Calculation and verification.** For each annotated patient–structure pair, Precision = TP/(TP+FP), Recall = TP/(TP+FN), and Volume Dice = 2TP/(2TP+FP+FN). Each class row averages its available validation patient scores. The overall patient-macro row instead averages the annotated class scores within each patient, then averages the ten patient results. It is not the unweighted mean of the fourteen class rows or a pooled-voxel Dice. Precision, recall and all three overall Dice values were recalculated from the 91 supplied case-class records and match the report within floating-point precision.
+
+Example from `val_01/RANC`: GT = 883 voxels, predicted = 943 voxels. The supplied precision and voxel counts give integer TP = 774, FP = 169, FN = 109. Precision = 774/943 = **82.08%**; Recall = 774/883 = **87.66%**; Dice = 1548/1826 = **84.78%**. The ten unrounded patient-average Volume Dice values sum to 8.574408147710288; dividing by ten and multiplying by 100 gives **85.7440814771%**. Surface Dice uses physical 3D surface distances with the stated tolerance, not this voxel-overlap formula. A 1 mm tolerance does not mean the CT was resampled to 1 mm voxels. A complete interclass confusion matrix cannot be reconstructed from these summaries; no TN counts or off-diagonal class-confusion counts were invented.
+
+Before continuation on this new task, the source checkpoint evaluated with the new preprocessing and target set recorded Volume Dice **12.1958%**, Surface Dice at 1 mm **33.8692%**, and Surface Dice at 0.5 mm **21.5039%**. Its rise to 85.7441% Volume Dice is **+73.5483 percentage points within this task/protocol**. This is not a controlled comparison against the earlier FSDP-only 49.983% benchmark: target anatomy, normalization, grids and evaluation aggregation differ.
+
+**Remaining weaknesses:** RSBFC is the weakest evaluated class, with mean Volume Dice **74.2910%** across only three annotated validation patients. `val_08/RSBFC` records Volume Dice **45.6187%**, Surface Dice at 1 mm **53.1980%**, precision **93.6275%**, and recall **30.1559%**. The lowest patient-average Volume Dice is `val_08` at **79.0548%**. Some other classes have only two or three validation examples, limiting confidence in their class averages.
+
+**Scope and interpretation:** ROI centers, class presence and five corrective oracle points per annotated structure are obtained from GT. Scores are computed on the final mutually exclusive native-field label map after merging prompted masks. Absent-class localization is not evaluated. These are assisted validation results for structures other than FSDP, not a new FSDP score, an automatic whole-CT result, an independent held-out test result, or a clinical deployment claim. The validation set has already been examined repeatedly. Overlays and masks have not been independently inspected in this local reporting step.
+
+Evidence: user-supplied DGX completion log, SHA256 `ddfb167ccf8b082ea42b086fd55b56a5aeac0e1f80b0f4d7c6d0e90188ab0668`. Reported best checkpoint SHA256: `c6d6eb911e595bf8393702f4716ee1648e3ca32c9cc94c23ba5d6e8dd2040241`. The supplied log and its nested metrics were parsed locally; the DGX checkpoint itself was not downloaded or rerun. Decision: retain this checkpoint and its exports as the current non-FSDP assisted validation benchmark; inspect overlays and the weak RSBFC case before expanding claims. No additional optimizer updates were performed while recording these results.
+
+An English evaluation presentation was also prepared with nine slides in a journal-style layout. The architecture slide follows the cover and shows the 128³ SAM context, 8³ Turbo embedding, CNN detail32³ branch, 67-to-64-channel feature fusion, skip decoder and residual mask correction. The remaining slides cover cohort/protocol, calculations, overall and per-structure results, patient variation, the weak RSBFC case, and study limitations. The standalone reproducibility slide was removed at the user's request; this logbook retains the evidence and checkpoint record above.
