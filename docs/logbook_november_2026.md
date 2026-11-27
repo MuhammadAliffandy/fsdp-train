@@ -273,3 +273,9 @@ Sumber lokal yang dibaca: `../brain-ctc-seg/training/train_se2_by_dataset.py`, `
 ### Implementasi tahap pertama transfer Brain
 
 Ditambahkan resep minibatch slice acak lintas pasien, input lima slice dan target slice tengah, dengan negatif tetap hadir. Dua arm baru memakai backbone residual yang sama: control loss lama dan focal–Dice–boundary dengan bobot batas dinormalisasi dalam satuan fisik. Bobot positif 10× tidak disalin. Global Dice ditambahkan bersama macro volume Dice dan metrik permukaan. Target 80% dicatat sebagai sasaran, bukan hasil. Maksimal 100 epoch per arm, patience 30, LR 1e-4. C8 belum diaktifkan pada tahap ini; pengaruh sampling/loss perlu diukur lebih dulu. Tiga tes sampler/loss CPU lulus; training DGX belum dijalankan dari sesi ini. Panduan: FSDP_BRAIN_RECIPE_2026-11-27.md.
+
+### Hasil Brain recipe dan koreksi sampler
+
+Run `fsdp_brain_recipe_20261127T022501Z_3624684`: control volume Dice **23,696%**, focal–boundary **22,540%** (−1,156 poin), best epoch 15, berhenti 45. Focal–boundary: train Dice **35,188%**, precision **20,589%**, recall **25,534%**, surface Dice @1 mm **57,256%**, median HD95 **5,067 mm**. Global Dice **22,770%** juga rendah, sehingga perbedaan agregasi dengan Brain bukan penjelasan cukup untuk kesenjangan hasil run ini.
+
+Ditemukan masalah implementasi batch: padding antarukuran ROI memengaruhi Conv/GroupNorm saat train, meski dimask pada loss, sedangkan inference tidak memakai padding tambahan itu. Uji sintetis menunjukkan sensitivitas prediksi terhadap padding; dampaknya pada checkpoint/pasien nyata belum diukur. Diperbaiki dengan kelompok ukuran XY persis sama, semua slice/negatif tetap dicakup, urutan batch diacak, dan collator menolak campuran ukuran. Lima tes lokal lulus, termasuk prediksi batch versus individual. Performa koreksi belum tersedia; data tidak dapat dipakai untuk menjanjikan target 80% atau menetapkan padding sebagai satu-satunya penyebab. C8 belum diuji pada run ini.

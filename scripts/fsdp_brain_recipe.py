@@ -7,7 +7,27 @@ from physical_unet25d import slice_stack
 from physical_resunet import supervised_loss
 
 
+def shape_batches(samples, batch_size, seed):
+    if batch_size < 1:
+        raise ValueError('Positive slice batch size required')
+    groups = {}
+    for index, sample in enumerate(samples):
+        shape = tuple(sample['image'].shape[2:4])
+        groups.setdefault(shape, []).extend((index,z) for z in range(sample['image'].shape[-1]))
+    generator = np.random.default_rng(seed)
+    batches = []
+    for shape in sorted(groups):
+        entries = groups[shape]
+        generator.shuffle(entries)
+        batches.extend(entries[i:i+batch_size] for i in range(0,len(entries),batch_size))
+    generator.shuffle(batches)
+    return batches
+
+
 def collate_slices(samples, entries, seed, augment=True):
+    shapes = {tuple(samples[i]['image'].shape[2:4]) for i,_ in entries}
+    if len(shapes) != 1:
+        raise ValueError('Slice minibatches must share native XY shape; padding changes GroupNorm and inference')
     rng = np.random.default_rng(seed)
     planes, masks, spacings = [], [], []
     for sample_index, center in entries:
@@ -72,10 +92,10 @@ def slice_loss(outputs, target, valid, spacings, arm):
 
 def train_slices(model, samples, optimizer, scaler, device, precision, epoch, args):
     from train_private_long import accumulation_window
-    entries = [(i,z) for i,s in enumerate(samples) for z in range(s['image'].shape[-1])]
-    rng = np.random.default_rng(args.seed + epoch)
-    rng.shuffle(entries)
-    batches = [entries[i:i+args.slice_batch_size] for i in range(0,len(entries),args.slice_batch_size)]
+    batches = shape_batches(samples, args.slice_batch_size, args.seed + epoch)
+    entry_count = sum(len(batch) for batch in batches)
+    if not entry_count:
+        raise ValueError('No training slices')
     model.train(); optimizer.zero_grad(set_to_none=True)
     total, updates, skipped, positive = 0., 0, 0, 0
     norms = []
@@ -106,6 +126,8 @@ def train_slices(model, samples, optimizer, scaler, device, precision, epoch, ar
             print(f'Brain-recipe={args.slice_loss} epoch={epoch+1}/{args.epochs} batch={step+1}/{len(batches)} loss={float(loss):.5f} updates={updates} skipped={skipped}',flush=True)
     if updates+skipped != math.ceil(len(batches)/args.accumulation):
         raise ValueError('Slice optimizer accounting differs')
-    return dict(loss=total/len(entries), optimizer_updates=updates, amp_skipped_updates=skipped,
-                slice_samples=len(entries), positive_slices=positive, negative_slices=len(entries)-positive,
-                gradient_norm_mean=float(np.mean(norms)), loss_arm=args.slice_loss)
+    return dict(loss=total/entry_count, optimizer_updates=updates, amp_skipped_updates=skipped,
+                slice_samples=entry_count, positive_slices=positive, negative_slices=entry_count-positive,
+                gradient_norm_mean=float(np.mean(norms)), loss_arm=args.slice_loss,
+                batch_shape_groups=len({tuple(s['image'].shape[2:4]) for s in samples}),
+                extra_collate_padding_fraction=0.)

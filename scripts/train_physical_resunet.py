@@ -90,7 +90,7 @@ def prepare(args):
             comparison_note='1vs5slice paired architecture experiment; different data/recipe/prompts from SAM; GTROI is not automatic localization')
     if getattr(args, 'slice_loss', None):
         config.update(experiment='brain_recipe_five_slice', slice_loss=args.slice_loss,
-            training_sampler='All retained native center slices shuffled across patients; variable shapes padded with masked loss; negatives retained',
+            training_sampler='All native center slices shuffled within exact XY-shape groups; batches shuffled; no cross-shape padding; negatives retained',
             loss=('existing volume Dice+balancedBCE on slice minibatches' if args.slice_loss == 'control' else
                   'per-slice0.5focal_gamma2+2Dice+0.5normalized_edgeBCE; physical1mmrectangular half-width band; no10xpositiveweight'),
             paired_design='Same random initialization/seed/slices/optimizer/schedule/budget; only loss changes between new arms',
