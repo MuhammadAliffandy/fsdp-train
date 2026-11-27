@@ -65,6 +65,8 @@ def prepare(args):
         code_files = (*code_files, 'physical_unet25d.py', 'fsdp_research_metrics.py')
         if getattr(args, 'slice_loss', None):
             code_files = (*code_files, 'fsdp_brain_recipe.py')
+        if getattr(args,'rotation_backbone',None):
+            code_files = (*code_files, 'fsdp_c8_model.py')
     config = {'experiment': 'physical_resunet_zero_clicks', 'architecture': ARCHITECTURE,
         'parameters': {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items() if k != 'resume'},
         'cache_sha256': old['cache_sha256'], 'manifest_sha256': old['manifest_sha256'], 'physical_policy': prepared['policy'],
@@ -95,6 +97,23 @@ def prepare(args):
                   'per-slice0.5focal_gamma2+2Dice+0.5normalized_edgeBCE; physical1mmrectangular half-width band; no10xpositiveweight'),
             paired_design='Same random initialization/seed/slices/optimizer/schedule/budget; only loss changes between new arms',
             scope='Brain-inspired sampling/loss; residualConv2Dbackbone; C8not enabled')
+    if getattr(args,'rotation_backbone',None):
+        config.update(experiment='brain_c8_five_slice',
+            architecture={'backbone':args.rotation_backbone,'group_order':8 if args.rotation_backbone=='c8' else None,
+                          'regular_fields':[args.c8_base_fields*2**i for i in range(5)],
+                          'scalar_channels':[8*args.c8_base_fields*2**i for i in range(5)],
+                          'downsampling_stages':4,'normalization':'InnerBatchNorm(C8) or BatchNorm2D(plain)',
+                          'deep_supervision':[1.,.3,.15],'initialization':'random; noSAMorBraincheckpoint'},
+            scope='Four-level Brain-style plain/C8comparison; same five-slice inputs/loss; noSAMprompts',
+            comparison_note='Matched four-level plain/C8study;five slices;GTROI;0clicks;random2Dweights;notSAMfinetuning;different group constraints/parametercounts',
+            paired_design='Same scalar feature widths/topology/data/loss/budget; different group constraints and parameter counts')
+        if args.rotation_backbone=='c8':
+            config['versions']['escnn']=importlib.metadata.version('escnn')
+            for package in ('scipy','lie-learn','pymanopt','autograd','py3nj'):
+                try:
+                    config['versions'][package]=importlib.metadata.version(package)
+                except importlib.metadata.PackageNotFoundError:
+                    config['versions'][package]=None
     if args.resume:
         if data.read(args.run_dir / 'config.json') != config or (args.run_dir / 'summary.json').exists():
             raise ValueError('Resume requires unchanged unfinished baseline configuration')
@@ -248,7 +267,10 @@ def fit(args, prepared, config):
     precision = torch.bfloat16 if args.precision == 'bf16' else torch.float16
     if device.type == 'cuda':
         torch.cuda.manual_seed_all(args.seed)
-    if getattr(args, 'neighbor_slices', None) is not None:
+    if getattr(args,'rotation_backbone',None):
+        from fsdp_c8_model import BrainUNet25D
+        model=BrainUNet25D(args.rotation_backbone,args.c8_base_fields).to(device)
+    elif getattr(args, 'neighbor_slices', None) is not None:
         from physical_unet25d import PhysicalUNet25D
         model = PhysicalUNet25D(args.neighbor_slices).to(device)
     else:
@@ -276,6 +298,7 @@ def fit(args, prepared, config):
             torch.cuda.set_rng_state_all(saved['cuda_rng'])
     else:
         model.train(); sample = prepared['samples']['train'][0]
+        initial_state={k:v.detach().clone() for k,v in model.state_dict().items()}
         (image, target, valid), _ = training_input(sample, device, args.seed, augment=False)
         with torch.autocast(device_type=device.type, enabled=device.type == 'cuda', dtype=precision):
             outputs = model(image)
@@ -284,6 +307,8 @@ def fit(args, prepared, config):
         if not gradients or any(not g.isfinite().all() for g in gradients) or sum(float(g.abs().sum()) for g in gradients) == 0:
             raise ValueError('Native-shape backward preflight failed')
         model.zero_grad(set_to_none=True)
+        model.load_state_dict(initial_state,strict=True)
+        del initial_state
         if state_hash(model.state_dict()) != initial_hash:
             raise ValueError('Gradient preflight changed initialization')
         data.save(args.run_dir / 'preflight.json', {'passed': True, 'optimizer_updates': 0, 'native_shape': list(image.shape),
@@ -345,7 +370,7 @@ def fit(args, prepared, config):
         'sam_comparison': config['sam_comparison'], 'delta_vs_sam_5_click_benchmark': best - config['sam_comparison']['dice_5_per_side'],
         'protocol': config['protocol'], 'interpretation': config['comparison_note'], 'artifacts': str(args.run_dir)}
     if getattr(args, 'slice_loss', None):
-        summary.update(slice_loss=args.slice_loss, backbone='ResidualConv2D; noC8', target_validation_dice=.8)
+        summary.update(slice_loss=args.slice_loss, backbone=getattr(args,'rotation_backbone',None) or 'ResidualConv2D; noC8', target_validation_dice=.8)
     data.save(args.run_dir / 'report.json', summary)
     with tarfile.open(args.run_dir / 'results.tar.gz', 'w:gz') as archive:
         for name in ('report.json', 'config.json', 'history.csv', 'preflight.json', 'best_exports'):
@@ -376,6 +401,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('foundation-run-dir', 'sam-comparison-dir', 'run-dir'):
         parser.add_argument('--' + name, type=Path, required=True)
+    parser.add_argument('--rotation-backbone',choices=('plain4','c8'))
+    parser.add_argument('--c8-base-fields',type=int,default=2)
     parser.add_argument('--slice-loss', choices=('control','focal_boundary'), help='Enable Brain-inspired native slice minibatches')
     parser.add_argument('--slice-batch-size', type=int, default=4)
     parser.add_argument('--neighbor-slices', type=int, choices=(1, 5), help='Enable native 2.5D (5) or matched slice control (1)')
@@ -399,6 +426,8 @@ def main():
             setattr(args, key, value.expanduser().resolve())
     if args.slice_loss and (args.neighbor_slices != 5 or args.slice_batch_size < 1):
         parser.error('Slice recipe requires five neighboring slices and positive batch size')
+    if args.rotation_backbone and (not args.slice_loss or args.neighbor_slices!=5 or not 1<=args.c8_base_fields<=32):
+        parser.error('Rotation study requires five-slice recipe and1..32base fields')
     existed = args.run_dir.exists()
     try:
         execute(args)
