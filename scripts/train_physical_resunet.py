@@ -63,6 +63,8 @@ def prepare(args):
                 sample['valid'] = torch.ones_like(sample['target'], dtype=torch.bool)
                 sample['grid'] = sample['native']
         code_files = (*code_files, 'physical_unet25d.py', 'fsdp_research_metrics.py')
+        if getattr(args, 'slice_loss', None):
+            code_files = (*code_files, 'fsdp_brain_recipe.py')
     config = {'experiment': 'physical_resunet_zero_clicks', 'architecture': ARCHITECTURE,
         'parameters': {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items() if k != 'resume'},
         'cache_sha256': old['cache_sha256'], 'manifest_sha256': old['manifest_sha256'], 'physical_policy': prepared['policy'],
@@ -86,6 +88,13 @@ def prepare(args):
             normalization='per native ROI zscore without foreground clipping; per-case unsupervised statistics',
             slice_spacing_mm={s['name']: s['native']['spacing'][2] for split in ('train','val') for s in prepared['samples'][split]},
             comparison_note='1vs5slice paired architecture experiment; different data/recipe/prompts from SAM; GTROI is not automatic localization')
+    if getattr(args, 'slice_loss', None):
+        config.update(experiment='brain_recipe_five_slice', slice_loss=args.slice_loss,
+            training_sampler='All retained native center slices shuffled across patients; variable shapes padded with masked loss; negatives retained',
+            loss=('existing volume Dice+balancedBCE on slice minibatches' if args.slice_loss == 'control' else
+                  'per-slice0.5focal_gamma2+2Dice+0.5normalized_edgeBCE; physical1mmrectangular half-width band; no10xpositiveweight'),
+            paired_design='Same random initialization/seed/slices/optimizer/schedule/budget; only loss changes between new arms',
+            scope='Brain-inspired sampling/loss; residualConv2Dbackbone; C8not enabled')
     if args.resume:
         if data.read(args.run_dir / 'config.json') != config or (args.run_dir / 'summary.json').exists():
             raise ValueError('Resume requires unchanged unfinished baseline configuration')
@@ -176,6 +185,9 @@ def evaluate(model, prepared, split, device, thresholds, precision, export=None)
         print(f'{split}: {case} {label} native inference complete', flush=True)
     for threshold, bundle in result.items():
         bundle['metrics'] = metrics(bundle)
+        tp = sum(p['true_positive_voxels'] for p in bundle['patients'])
+        denominator = sum(p['predicted_voxels_valid']+p['full_target_voxels'] for p in bundle['patients'])
+        bundle['metrics']['global_dice'] = 2*tp/denominator
         if hasattr(model, 'neighbor_slices') and split == 'val':
             for key in ('surface_dice_0_5mm', 'surface_dice_1mm'):
                 bundle['metrics']['mean_' + key] = float(np.mean([p[key] for p in bundle['patients']]))
@@ -188,6 +200,9 @@ def evaluate(model, prepared, split, device, thresholds, precision, export=None)
 
 
 def train_epoch(model, samples, optimizer, scaler, device, precision, epoch, args):
+    if getattr(args, 'slice_loss', None):
+        from fsdp_brain_recipe import train_slices
+        return train_slices(model,samples,optimizer,scaler,device,precision,epoch,args)
     model.train(); optimizer.zero_grad(set_to_none=True)
     order = np.random.default_rng(args.seed + epoch).permutation(len(samples))
     losses, norms, counts, updates, skips = [], [], {}, 0, 0
@@ -292,6 +307,7 @@ def fit(args, prepared, config):
             val = evaluate(model, prepared, 'val', device, sorted(set((candidate, .5))), precision)
             score = val[candidate]['metrics']['mean_bilateral_patient_dice']
             row.update(train_dice=train[candidate]['metrics']['mean_bilateral_patient_dice'], val_dice=score, threshold=candidate)
+            row['val_global_dice'] = val[candidate]['metrics']['global_dice']
             if hasattr(model, 'neighbor_slices'):
                 row.update({key: value for key, value in val[candidate]['metrics'].items() if 'surface' in key or 'hd95' in key})
             early, stopped = early_stop_update(early, score, epoch + 1, args.patience, .001)
@@ -328,6 +344,8 @@ def fit(args, prepared, config):
         'test_images_read': False, 'checkpoint_sha256': file_hash(args.run_dir / 'resunet_best.pth'),
         'sam_comparison': config['sam_comparison'], 'delta_vs_sam_5_click_benchmark': best - config['sam_comparison']['dice_5_per_side'],
         'protocol': config['protocol'], 'interpretation': config['comparison_note'], 'artifacts': str(args.run_dir)}
+    if getattr(args, 'slice_loss', None):
+        summary.update(slice_loss=args.slice_loss, backbone='ResidualConv2D; noC8', target_validation_dice=.8)
     data.save(args.run_dir / 'report.json', summary)
     with tarfile.open(args.run_dir / 'results.tar.gz', 'w:gz') as archive:
         for name in ('report.json', 'config.json', 'history.csv', 'preflight.json', 'best_exports'):
@@ -358,6 +376,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('foundation-run-dir', 'sam-comparison-dir', 'run-dir'):
         parser.add_argument('--' + name, type=Path, required=True)
+    parser.add_argument('--slice-loss', choices=('control','focal_boundary'), help='Enable Brain-inspired native slice minibatches')
+    parser.add_argument('--slice-batch-size', type=int, default=4)
     parser.add_argument('--neighbor-slices', type=int, choices=(1, 5), help='Enable native 2.5D (5) or matched slice control (1)')
     parser.add_argument('--source-root', type=Path)
     parser.add_argument('--epochs', type=int, default=300)
@@ -377,6 +397,8 @@ def main():
     for key, value in vars(args).items():
         if isinstance(value, Path):
             setattr(args, key, value.expanduser().resolve())
+    if args.slice_loss and (args.neighbor_slices != 5 or args.slice_batch_size < 1):
+        parser.error('Slice recipe requires five neighboring slices and positive batch size')
     existed = args.run_dir.exists()
     try:
         execute(args)
